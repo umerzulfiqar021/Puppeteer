@@ -1,0 +1,30 @@
+{
+  "name": "i-tours-puppeteer-scraper",
+  "version": "1.0.0",
+  "description": "Professional Puppeteer scraper for Booking.com hotel data with stealth capabilities",
+  "main": "scraper/index.js",
+  "packageManager": "yarn@1.22.22",
+  "scripts": {
+    "start": "node scraper/index.js",
+    "server": "node local_server.js",
+    "test": "echo '{\"location\":\"murree\"}' | node scraper/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "puppeteer",
+    "scraper",
+    "booking.com",
+    "hotels",
+    "stealth"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "puppeteer": "^21.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}
