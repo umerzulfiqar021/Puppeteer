@@ -35,7 +35,7 @@ function buildSearchURL(location, options = {}) {
     checkout: options.checkout || formatDate(defaultCheckout),
     group_adults: String(options.adults || 2),
     no_rooms: String(options.rooms || 1),
-    group_children: '0',
+    group_children: String(options.children || 0),
     lang: 'en-us'
   });
   
@@ -774,6 +774,118 @@ function extractHotelDetailsFromHTML(html) {
     
     details.area_info = areaInfo;
     
+    // ===== LANGUAGES SPOKEN =====
+    try {
+      const languages = [];
+      
+      // Pattern 1: From JSON "availableLanguage" array
+      const langJsonMatch = html.match(/"availableLanguage"\s*:\s*\[([^\]]+)\]/i);
+      if (langJsonMatch) {
+        const langRegex = /"(?:name|value)"\s*:\s*"([^"]+)"/gi;
+        let langMatch;
+        while ((langMatch = langRegex.exec(langJsonMatch[1])) !== null) {
+          const lang = decodeHtmlEntities(langMatch[1]);
+          if (!languages.includes(lang)) languages.push(lang);
+        }
+      }
+      
+      // Pattern 2: Direct string array pattern
+      if (languages.length === 0) {
+        const langArrayMatch = html.match(/"availableLanguage"\s*:\s*\["([^"\]]+)"\]/i);
+        if (langArrayMatch) {
+          langArrayMatch[1].split('","').forEach(lang => {
+            const cleaned = lang.trim();
+            if (cleaned && !languages.includes(cleaned)) languages.push(cleaned);
+          });
+        }
+      }
+      
+      // Pattern 3: Languages spoken section in HTML
+      if (languages.length === 0) {
+        const langSectionMatch = html.match(/Languages?\s*[Ss]poken[\s\S]{0,200}?>(Arabic|English|Hindi|French|German|Spanish|Chinese|Russian|Japanese|Korean|Portuguese|Italian|Dutch|Turkish|Urdu)(?:[,\s]*(Arabic|English|Hindi|French|German|Spanish|Chinese|Russian|Japanese|Korean|Portuguese|Italian|Dutch|Turkish|Urdu))*</i);
+        if (langSectionMatch) {
+          for (let i = 1; i < langSectionMatch.length; i++) {
+            if (langSectionMatch[i] && !languages.includes(langSectionMatch[i])) {
+              languages.push(langSectionMatch[i]);
+            }
+          }
+        }
+      }
+      
+      // Pattern 4: Look for comma-separated languages in text
+      if (languages.length === 0) {
+        const langTextMatch = html.match(/(Arabic|English|Hindi|French|German|Spanish|Chinese|Russian)[,\s]+(Arabic|English|Hindi|French|German|Spanish|Chinese|Russian)(?:[,\s]+(Arabic|English|Hindi|French|German|Spanish|Chinese|Russian))?/i);
+        if (langTextMatch) {
+          for (let i = 1; i < langTextMatch.length; i++) {
+            if (langTextMatch[i] && !languages.includes(langTextMatch[i])) {
+              languages.push(langTextMatch[i]);
+            }
+          }
+        }
+      }
+      
+      if (languages.length > 0) {
+        details.languages_spoken = languages;
+      }
+    } catch (langErr) {
+      console.error('[DETAILS] Languages extraction error:', langErr.message);
+    }
+    
+    // ===== NEIGHBORHOOD / COMPANY INFO =====
+    try {
+      const propertyInfo = {};
+      
+      // Pattern 1: Host profile with company/neighborhood info
+      // Look for data-testid="TextListItem" patterns which often contain this info
+      const hostProfileMatch = html.match(/data-testid="TextListItem"[^>]*>[\s\S]*?<span[^>]*>([^<]+)<\/span>[\s\S]*?<span[^>]*>([^<]+)<\/span>/gi);
+      if (hostProfileMatch) {
+        hostProfileMatch.forEach(match => {
+          const labelMatch = match.match(/<span[^>]*>([^<]+)<\/span>[\s\S]*?<span[^>]*>([^<]+)<\/span>/i);
+          if (labelMatch) {
+            const label = labelMatch[1].trim().toLowerCase();
+            const value = decodeHtmlEntities(labelMatch[2].trim());
+            if (label.includes('company') || label.includes('host')) {
+              propertyInfo.company_info = value;
+            } else if (label.includes('neighborhood') || label.includes('neighbourhood') || label.includes('area')) {
+              propertyInfo.neighborhood = value;
+            } else if (label.includes('language')) {
+              // Also capture languages from here if not already captured
+              if (!details.languages_spoken) {
+                details.languages_spoken = value.split(/[,،]/).map(l => l.trim()).filter(l => l.length > 1);
+              }
+            }
+          }
+        });
+      }
+      
+      // Pattern 2: Property description block
+      const propDescBlock = html.match(/data-testid="property-description"[^>]*>([\s\S]*?)<\/div>/i);
+      if (propDescBlock) {
+        const text = propDescBlock[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        if (text.length > 50 && text.length < 1000) {
+          propertyInfo.description = decodeHtmlEntities(text);
+        }
+      }
+      
+      // Pattern 3: About the host section
+      const aboutHostMatch = html.match(/About\s+(?:the\s+)?(?:host|property|hotel)[\s\S]*?<(?:p|div)[^>]*>([^<]{30,500})</i);
+      if (aboutHostMatch) {
+        propertyInfo.about = decodeHtmlEntities(aboutHostMatch[1].trim());
+      }
+      
+      // Pattern 4: Check-in info / house rules section often contains useful info
+      const houseRulesMatch = html.match(/House\s+[Rr]ules[\s\S]*?<(?:p|div)[^>]*>([^<]{20,300})</i);
+      if (houseRulesMatch) {
+        propertyInfo.house_rules = decodeHtmlEntities(houseRulesMatch[1].trim());
+      }
+      
+      if (Object.keys(propertyInfo).length > 0) {
+        details.property_info = propertyInfo;
+      }
+    } catch (propErr) {
+      console.error('[DETAILS] Property info extraction error:', propErr.message);
+    }
+    
   } catch (e) {
     console.error('[DETAILS] Extraction error:', e.message);
   }
@@ -855,22 +967,40 @@ async function scrapeHotelDetailsWithPuppeteer(hotelURL) {
       const delay = (ms) => new Promise(r => setTimeout(r, ms));
       const h = document.body?.scrollHeight || 5000;
       
-      // Scroll down in steps
-      for (let i = 1; i <= 4; i++) {
-        window.scrollTo(0, (h / 4) * i);
-        await delay(300);
+      // Scroll down in steps to trigger ALL lazy content
+      for (let i = 1; i <= 6; i++) {
+        window.scrollTo(0, (h / 6) * i);
+        await delay(400);
       }
-      // Stay at bottom briefly
-      await delay(1000);
-      // Scroll back up
+      
+      // Try to click on "Location" section if visible
+      const locationTab = document.querySelector('[data-testid="property-section-location"]') ||
+                          document.querySelector('#surroundings_block') ||
+                          document.querySelector('[data-section-name="Location"]');
+      if (locationTab) {
+        locationTab.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        await delay(1000);
+      }
+      
+      // Scroll back to top
       window.scrollTo(0, 0);
+      await delay(500);
+      
+      // Scroll to bottom again
+      window.scrollTo(0, h);
+      await delay(1000);
     });
     
     // Wait for POI blocks to appear
     try {
-      await page.waitForSelector('[data-testid="poi-block-list"]', { timeout: 5000 });
+      await page.waitForSelector('[data-testid="poi-block-list"]', { timeout: 8000 });
     } catch (e) {
-      // POI block not found, continue anyway
+      // POI block not found, try waiting for location section
+      try {
+        await page.waitForSelector('[data-testid="PropertySurroundingsBlock"]', { timeout: 3000 });
+      } catch (e2) {
+        // Continue anyway
+      }
     }
     
     await randomDelay(500, 1000);

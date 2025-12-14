@@ -1,272 +1,246 @@
-# Hotel Scraper API
+# Booking.com Scraper API
 
-## Start Server
+A REST API for scraping hotel data from Booking.com using Puppeteer.
+
+---
+
+## Quick Start
+
 ```bash
 node local_server.js
 ```
-Server runs at: `http://localhost:3000`
+
+**Base URL:** `http://localhost:3000` (replace with your domain when hosted)
 
 ---
 
-## 1. Search Hotels by Location
+## Endpoints
 
-**Endpoint:** `POST /api/hotels`
+### 1. Health Check
 
-### Using curl (Terminal)
+**GET** `/api/health`
+
+Check if the server is running.
+
+#### Terminal
+
 ```bash
-# Basic (pretty output with colors)
-curl -s http://localhost:3000/api/hotels \
-  -H "Content-Type: application/json" \
-  -d '{"location": "bristol"}' | jq .
-
-# With dates
-curl -s http://localhost:3000/api/hotels \
-  -H "Content-Type: application/json" \
-  -d '{"location": "dubai", "checkin": "2025-12-20", "checkout": "2025-12-22"}' | jq .
+curl -s http://localhost:3000/api/health | jq '.'
 ```
 
-### Using JavaScript/NestJS
+---
+
+### 2. Search Hotels
+
+**POST** `/api/hotels`
+
+Search for hotels in a destination.
+
+#### Request Body
+
 ```javascript
-// Using fetch
-const response = await fetch('http://localhost:3000/api/hotels', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ 
-    location: 'dubai',
-    // Optional parameters:
-    checkin: '2025-12-20',   // optional - default: tomorrow
-    checkout: '2025-12-22',  // optional - default: 2 days after checkin
-    adults: 2,               // optional - default: 2
-    rooms: 1                 // optional - default: 1
-  })
-});
-const data = await response.json();
-console.log(data);
-
-// Using axios (minimal - only required field)
-const axios = require('axios');
-const { data } = await axios.post('http://localhost:3000/api/hotels', {
-  location: 'dubai'  // only location is required!
-});
-
-// Using axios (with all options)
-const { data } = await axios.post('http://localhost:3000/api/hotels', {
-  location: 'dubai',
-  checkin: '2025-12-20',
-  checkout: '2025-12-22',
+{
+  location: "Dubai",
+  checkin: "2025-02-01",
+  checkout: "2025-02-05",
   adults: 2,
+  children: 1,
   rooms: 1
-});
+}
 ```
 
-### Request Parameters
-| Parameter | Required | Default | Description |
-|-----------|----------|---------|-------------|
-| `location` | ✅ Yes | - | City name (dubai, london, paris) |
-| `checkin` | ❌ No | tomorrow | Check-in date (YYYY-MM-DD) |
-| `checkout` | ❌ No | checkin + 2 days | Check-out date (YYYY-MM-DD) |
-| `adults` | ❌ No | 2 | Number of adults |
-| `rooms` | ❌ No | 1 | Number of rooms |
+| Parameter | Type   | Required | Description                          |
+|-----------|--------|----------|--------------------------------------|
+| location  | string | ✅       | City or location name                |
+| checkin   | string | ✅       | Check-in date (YYYY-MM-DD)           |
+| checkout  | string | ✅       | Check-out date (YYYY-MM-DD)          |
+| adults    | number | ❌       | Number of adults (default: 2)        |
+| children  | number | ❌       | Number of children (default: 0)      |
+| rooms     | number | ❌       | Number of rooms (default: 1)         |
 
-### Response
+#### Terminal
+
+```bash
+curl -s -X POST http://localhost:3000/api/hotels \
+  -H "Content-Type: application/json" \
+  -d '{
+    "location": "New York",
+    "checkin": "2025-02-01",
+    "checkout": "2025-02-05",
+    "adults": 2,
+    "children": 1,
+    "rooms": 1
+  }' | jq '.'
+```
+
+#### NestJS
+
+```typescript
+const response = await this.httpService.axiosRef.post(
+  `${BASE_URL}/api/hotels`,
+  {
+    location: "Dubai",
+    checkin: "2025-02-01",
+    checkout: "2025-02-05",
+    adults: 2,
+    children: 1,
+    rooms: 1
+  }
+);
+return response.data;
+```
+
+---
+
+### 3. Get Hotel Details
+
+**POST** `/api/hotel-details`
+
+Get detailed information about a specific hotel.
+
+#### Request Body
+
+```javascript
+{
+  url: "https://www.booking.com/hotel/ae/the-st-regis-downtown-dubai.html"
+}
+```
+
+| Parameter | Type   | Required | Description                      |
+|-----------|--------|----------|----------------------------------|
+| url       | string | ✅       | Full Booking.com hotel URL       |
+
+#### How to Get the URL
+
+1. Search for hotels using `/api/hotels`
+2. Copy the `url` field from any hotel in the response
+3. Send it to `/api/hotel-details`
+
+#### Terminal
+
+```bash
+curl -s -X POST http://localhost:3000/api/hotel-details \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://www.booking.com/hotel/us/the-premier-new-york-new-york-city.html?checkin=2025-02-01&checkout=2025-02-05&group_adults=2&no_rooms=1&group_children=1"
+  }' | jq '.'
+```
+
+#### NestJS
+
+```typescript
+const response = await this.httpService.axiosRef.post(
+  `${BASE_URL}/api/hotel-details`,
+  {
+    url: "https://www.booking.com/hotel/ae/the-st-regis-downtown-dubai.html"
+  }
+);
+return response.data;
+```
+
+---
+
+## Tool Reference
+
+| Tool | Purpose                                        |
+|------|------------------------------------------------|
+| curl | Command-line tool to send HTTP requests        |
+| jq   | Command-line JSON processor for pretty output  |
+
+---
+
+## Response Examples
+
+### Health Check Response
+
+```json
+{
+  "status": "ok",
+  "timestamp": "2025-01-24T10:30:00.000Z",
+  "scraper": "booking.com"
+}
+```
+
+### Search Hotels Response
+
 ```json
 {
   "success": true,
-  "location": "dubai",
-  "count": 27,
+  "location": "Dubai",
+  "checkin": "2025-02-01",
+  "checkout": "2025-02-05",
   "hotels": [
     {
-      "name": "FIVE Jumeirah Village",
-      "link": "https://www.booking.com/hotel/ae/five-jumeirah-village.html",
-      "picture_url": "https://cf.bstatic.com/...",
-      "rating": 9.2,
-      "reviews_count": 32900,
-      "location": "Jumeirah Village Circle",
-      "price_per_night": "1000"
+      "name": "The St. Regis Downtown Dubai",
+      "url": "https://www.booking.com/hotel/ae/the-st-regis-downtown-dubai.html",
+      "price": "AED 1,500",
+      "rating": "9.2",
+      "reviewCount": "1,234",
+      "image": "https://cf.bstatic.com/..."
     }
-  ]
+  ],
+  "total": 25,
+  "duration": 5.23
 }
 ```
 
----
+### Hotel Details Response
 
-## 2. Get Hotel Details
-
-**Endpoint:** `POST /api/hotel-details`
-
-### Using curl (Terminal)
-```bash
-curl -s http://localhost:3000/api/hotel-details \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://www.booking.com/hotel/ae/five-jumeirah-village.html"}' | jq .
-```
-
-### Using JavaScript/NestJS
-```javascript
-// Using fetch
-const response = await fetch('http://localhost:3000/api/hotel-details', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ 
-    url: 'https://www.booking.com/hotel/ae/five-jumeirah-village.html' 
-  })
-});
-const data = await response.json();
-
-// Using axios
-const { data } = await axios.post('http://localhost:3000/api/hotel-details', {
-  url: 'https://www.booking.com/hotel/ae/five-jumeirah-village.html'
-});
-```
-
-### Request Parameters
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `url` | ✅ Yes | Full Booking.com hotel URL |
-
-### Response
 ```json
 {
   "success": true,
-  "duration_seconds": 9.35,
   "hotel": {
-    "name": "FIVE Jumeirah Village",
-    "address": "Jumeirah Village Circle Dubai, Dubai, UAE",
-    "rating": 9,
-    "reviews_count": 32900,
-    "rating_text": "Wonderful",
-    "stars": 5,
-    "description": "Located in Dubai, 5 mi from Dubai Autodrome...",
-    "main_photo": "https://cf.bstatic.com/xdata/images/hotel/...",
-    "photos": ["https://...", "https://..."],
-    "facilities": ["WiFi", "Pool", "Spa", "Gym", "Restaurant", "Bar", "Parking"],
-    "rooms": [{"name": "Deluxe Room", "price": "1000", "currency": "AED"}],
-    "checkin_time": "3:00",
-    "checkout_time": "12:00",
-    "coordinates": {"latitude": 25.05, "longitude": 55.20},
-    "highlights": ["Free private parking"],
+    "name": "The St. Regis Downtown Dubai",
+    "address": "Downtown Dubai, Dubai, UAE",
+    "rating": 9.2,
+    "reviewScore": "Superb",
+    "coordinates": {
+      "latitude": 25.123456,
+      "longitude": 55.123456
+    },
+    "photos": [
+      "https://cf.bstatic.com/photo1.jpg",
+      "https://cf.bstatic.com/photo2.jpg"
+    ],
+    "facilities": [
+      "Free WiFi",
+      "Swimming pool",
+      "Fitness center",
+      "Restaurant"
+    ],
+    "description": "Located in the heart of Downtown Dubai...",
     "area_info": {
-      "restaurants_cafes": [
-        {"name": "Giftto Cafe", "distance": "2 km"},
-        {"name": "Nadeem Wahid Tea Stall", "distance": "4.5 km"}
+      "whats_nearby": [
+        { "name": "Dubai Mall", "distance": "0.5 km" },
+        { "name": "Burj Khalifa", "distance": "0.8 km" }
+      ],
+      "restaurants_and_cafes": [
+        { "type": "Restaurant", "name": "Zuma", "distance": "0.3 km" },
+        { "type": "Cafe", "name": "Starbucks", "distance": "0.1 km" }
+      ],
+      "top_attractions": [
+        { "name": "Dubai Fountain", "distance": "0.6 km" }
+      ],
+      "beaches_in_the_neighborhood": [
+        { "name": "Jumeirah Beach", "distance": "5 km" }
       ],
       "public_transit": [
-        {"name": "Sialkot Train Station", "distance": "4.2 km"},
-        {"name": "Gunna Kalan RS", "distance": "15 km"}
+        { "type": "Metro", "name": "Burj Khalifa Station", "distance": "0.4 km" }
       ],
-      "airports": [
-        {"name": "Sialkot International Airport", "distance": "8 km"}
-      ],
-      "attractions": []
-    },
-    "url": "https://www.booking.com/hotel/ae/five-jumeirah-village.html"
-  }
+      "closest_airports": [
+        { "name": "Dubai International Airport", "code": "DXB", "distance": "15 km" }
+      ]
+    }
+  },
+  "duration": 17.32
 }
 ```
 
 ---
 
-## 3. Health Check
+## Hosting
 
-```bash
-curl http://localhost:3000/api/health | jq .
-```
+Replace `{BASE_URL}` with your server URL:
 
----
-
-## What Each Part Means
-
-| Part | Meaning |
-|------|---------|
-| `curl` | Command line tool to make HTTP requests |
-| `-s` | Silent mode (no progress bar) |
-| `-H "Content-Type: application/json"` | Header: tells server we're sending JSON |
-| `-d '{"location": "dubai"}'` | Data: the JSON body to send |
-| `| jq .` | Pipe to jq: formats output with colors (green/blue) |
-
----
-
-## When Hosted on Server
-
-Replace `localhost:3000` with your server URL:
-
-```bash
-# Local
-curl http://localhost:3000/api/hotels ...
-
-# Production (example)
-curl https://your-server.com/api/hotels ...
-curl https://api.itours.com/api/hotels ...
-```
-
-### NestJS Service Example
-```typescript
-// hotels.service.ts
-import { Injectable } from '@nestjs/common';
-import { HttpService } from '@nestjs/axios';
-import { firstValueFrom } from 'rxjs';
-
-interface SearchHotelsParams {
-  location: string;      // required
-  checkin?: string;      // optional (YYYY-MM-DD)
-  checkout?: string;     // optional (YYYY-MM-DD)
-  adults?: number;       // optional (default: 2)
-  rooms?: number;        // optional (default: 1)
-}
-
-@Injectable()
-export class HotelsService {
-  // Replace with your hosted URL
-  private apiUrl = 'http://localhost:3000';  // or 'https://your-server.com'
-
-  constructor(private http: HttpService) {}
-
-  // Search hotels - only location is required, rest are optional
-  async searchHotels(params: SearchHotelsParams) {
-    const response = await firstValueFrom(
-      this.http.post(`${this.apiUrl}/api/hotels`, params)
-    );
-    return response.data;
-  }
-
-  // Get hotel details
-  async getHotelDetails(url: string) {
-    const response = await firstValueFrom(
-      this.http.post(`${this.apiUrl}/api/hotel-details`, { url })
-    );
-    return response.data;
-  }
-}
-
-// Usage in controller:
-// Minimal (only required)
-// await hotelsService.searchHotels({ location: 'dubai' });
-
-// With optional dates
-// await hotelsService.searchHotels({ 
-//   location: 'dubai', 
-//   checkin: '2025-12-20', 
-//   checkout: '2025-12-22' 
-// });
-
-// Get specific hotel details (pass the hotel URL from search results)
-// await hotelsService.getHotelDetails('https://www.booking.com/hotel/ae/five-jumeirah-village.html');
-```
-
----
-
-## Quick Examples
-
-```bash
-# Search Dubai hotels (with pretty colors)
-curl -s http://localhost:3000/api/hotels -H "Content-Type: application/json" -d '{"location":"dubai"}' | jq .
-
-# Get hotel details (with pretty colors)  
-curl -s http://localhost:3000/api/hotel-details -H "Content-Type: application/json" -d '{"url":"https://www.booking.com/hotel/ae/five-jumeirah-village.html"}' | jq .
-
-# Health check
-curl -s http://localhost:3000/api/health | jq .
-```
-curl -s http://localhost:3000/api/hotel-details \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://www.booking.com/hotel/gb/ebhibristolcitycentre.html?checkin=2025-12-15&checkout=2025-12-17&group_adults=2&no_rooms=1&group_children=0"}' | jq .
+- **Local:** `http://localhost:3000`
+- **Production:** `https://your-domain.com`

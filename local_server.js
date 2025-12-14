@@ -106,6 +106,7 @@ async function handleHotelsEndpoint(req, res) {
       checkin: body.checkin || null,
       checkout: body.checkout || null,
       adults: body.adults || 2,
+      children: body.children || 0,
       rooms: body.rooms || 1,
       useZyte: body.useZyte || false
     };
