@@ -4,16 +4,34 @@
  * Core scraper module for Booking.com hotel data extraction.
  * Uses puppeteer-extra with stealth plugin for anti-bot evasion.
  * Supports Zyte API browserHtml for production use.
+ * Supports @sparticuz/chromium for serverless environments.
  * 
  * @module scraper/booking
  */
 
 require('dotenv').config();
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const { TIMING, getRandomUserAgent, randomDelay } = require('./config');
 
-puppeteer.use(StealthPlugin());
+// Check if running in serverless environment
+const isServerless = !!process.env.AWS_LAMBDA_FUNCTION_NAME || 
+                     !!process.env.APPWRITE_FUNCTION_ID ||
+                     !!process.env.VERCEL ||
+                     !!process.env.NETLIFY;
+
+let puppeteer;
+let chromium;
+
+if (isServerless) {
+  // Use puppeteer-core with @sparticuz/chromium for serverless
+  puppeteer = require('puppeteer-core');
+  chromium = require('@sparticuz/chromium');
+} else {
+  // Use puppeteer-extra with stealth for local development
+  puppeteer = require('puppeteer-extra');
+  const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+  puppeteer.use(StealthPlugin());
+}
+
+const { TIMING, getRandomUserAgent, randomDelay } = require('./config');
 
 /**
  * Build Booking.com search URL from location and optional dates.
@@ -227,23 +245,38 @@ function extractHotelsFromHTML(html) {
  */
 async function scrapeWithPuppeteer(searchURL) {
   console.log('[SCRAPER] Using local Puppeteer...');
+  console.log('[SCRAPER] Serverless mode:', isServerless);
   
   const userAgent = getRandomUserAgent();
   console.log('[SCRAPER] User-Agent:', userAgent.substring(0, 50) + '...');
   
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--disable-gpu',
-      '--window-size=1920,1080',
-      '--disable-blink-features=AutomationControlled',
-      '--lang=en-US'
-    ]
-  });
+  let browser;
+  
+  if (isServerless) {
+    // Serverless: use @sparticuz/chromium
+    console.log('[SCRAPER] Launching serverless Chromium...');
+    browser = await puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+    });
+  } else {
+    // Local: use regular puppeteer
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--disable-gpu',
+        '--window-size=1920,1080',
+        '--disable-blink-features=AutomationControlled',
+        '--lang=en-US'
+      ]
+    });
+  }
   
   try {
     const page = await browser.newPage();
@@ -1004,18 +1037,33 @@ async function scrapeHotelDetailsWithZyte(hotelURL, zyteApiKey) {
  */
 async function scrapeHotelDetailsWithPuppeteer(hotelURL) {
   console.log('[SCRAPER] Fetching hotel details with Puppeteer...');
+  console.log('[SCRAPER] Serverless mode:', isServerless);
   
   const userAgent = getRandomUserAgent();
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--window-size=1920,1080',
-      '--disable-blink-features=AutomationControlled'
-    ]
-  });
+  let browser;
+  
+  if (isServerless) {
+    // Serverless: use @sparticuz/chromium
+    console.log('[SCRAPER] Launching serverless Chromium...');
+    browser = await puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+    });
+  } else {
+    // Local: use regular puppeteer
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--window-size=1920,1080',
+        '--disable-blink-features=AutomationControlled'
+      ]
+    });
+  }
   
   try {
     const page = await browser.newPage();
