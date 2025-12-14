@@ -17,7 +17,7 @@ Server runs at: `http://localhost:3000`
 # Basic (pretty output with colors)
 curl -s http://localhost:3000/api/hotels \
   -H "Content-Type: application/json" \
-  -d '{"location": "dubai"}' | jq .
+  -d '{"location": "bristol"}' | jq .
 
 # With dates
 curl -s http://localhost:3000/api/hotels \
@@ -145,6 +145,20 @@ const { data } = await axios.post('http://localhost:3000/api/hotel-details', {
     "checkout_time": "12:00",
     "coordinates": {"latitude": 25.05, "longitude": 55.20},
     "highlights": ["Free private parking"],
+    "area_info": {
+      "restaurants_cafes": [
+        {"name": "Giftto Cafe", "distance": "2 km"},
+        {"name": "Nadeem Wahid Tea Stall", "distance": "4.5 km"}
+      ],
+      "public_transit": [
+        {"name": "Sialkot Train Station", "distance": "4.2 km"},
+        {"name": "Gunna Kalan RS", "distance": "15 km"}
+      ],
+      "airports": [
+        {"name": "Sialkot International Airport", "distance": "8 km"}
+      ],
+      "attractions": []
+    },
     "url": "https://www.booking.com/hotel/ae/five-jumeirah-village.html"
   }
 }
@@ -253,3 +267,6 @@ curl -s http://localhost:3000/api/hotel-details -H "Content-Type: application/js
 # Health check
 curl -s http://localhost:3000/api/health | jq .
 ```
+curl -s http://localhost:3000/api/hotel-details \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://www.booking.com/hotel/gb/ebhibristolcitycentre.html?checkin=2025-12-15&checkout=2025-12-17&group_adults=2&no_rooms=1&group_children=0"}' | jq .

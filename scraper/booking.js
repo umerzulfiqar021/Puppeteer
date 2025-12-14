@@ -433,19 +433,42 @@ function extractHotelDetailsFromHTML(html) {
   const details = {};
   
   try {
-    // Hotel name - from JSON-LD schema first (most reliable)
-    const schemaMatch = html.match(/"@type"\s*:\s*"Hotel"[\s\S]*?"name"\s*:\s*"([^"]+)"/i);
-    const ogTitleMatch = html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]+)"/i);
-    const h1Match = html.match(/<h1[^>]*>([^<]{3,100})<\/h1>/i);
+    // Hotel name - prioritize most reliable sources first
+    // 1. og:title meta tag (most reliable, format: "★★★★★ Hotel Name, City, Country")
+    const ogTitleMatch = html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]+)"/i) ||
+                        html.match(/<meta[^>]*content="([^"]+)"[^>]*property="og:title"/i);
+    // 2. Specific hotel name from JSON with "Hotel" type
+    const hotelJsonMatch = html.match(/"@type"\s*:\s*"Hotel"[^}]*?"name"\s*:\s*"([^"]+)"/i);
+    // 3. data-testid for header
+    const hotelNameMatch = html.match(/data-testid="header-hotel-name"[^>]*>([^<]+)</i);
+    // 4. h2 header
+    const h2HotelMatch = html.match(/<h2[^>]*class="[^"]*pp-header__title[^"]*"[^>]*>([^<]+)</i);
+    // 5. Title tag
     const titleMatch = html.match(/<title>([^<|]+)/i);
     
-    if (schemaMatch) {
-      details.name = decodeHtmlEntities(schemaMatch[1].trim());
-    } else if (ogTitleMatch) {
-      details.name = decodeHtmlEntities(ogTitleMatch[1].split('|')[0].trim());
-    } else if (h1Match) {
-      details.name = decodeHtmlEntities(h1Match[1].trim());
-    } else if (titleMatch) {
+    if (ogTitleMatch) {
+      // Clean og:title: remove stars (★) and extract hotel name
+      let name = ogTitleMatch[1].trim();
+      name = name.replace(/^[★☆\s]+/, ''); // Remove leading stars
+      name = name.split(',')[0].trim(); // Take first part (hotel name)
+      if (name.length > 3) {
+        details.name = decodeHtmlEntities(name);
+      }
+    }
+    
+    if (!details.name && hotelJsonMatch) {
+      const name = hotelJsonMatch[1].trim();
+      // Avoid calendar/month names
+      if (name.length > 3 && !/^(January|February|March|April|May|June|July|August|September|October|November|December)$/i.test(name)) {
+        details.name = decodeHtmlEntities(name);
+      }
+    }
+    
+    if (!details.name && hotelNameMatch) {
+      details.name = decodeHtmlEntities(hotelNameMatch[1].trim());
+    } else if (!details.name && h2HotelMatch) {
+      details.name = decodeHtmlEntities(h2HotelMatch[1].trim());
+    } else if (!details.name && titleMatch) {
       details.name = decodeHtmlEntities(titleMatch[1].trim());
     }
     
@@ -643,6 +666,114 @@ function extractHotelDetailsFromHTML(html) {
                       html.match(/"starRating"\s*:\s*\{[^}]*"ratingValue"\s*:\s*(\d)/i);
     details.stars = starsMatch ? parseInt(starsMatch[1], 10) : null;
     
+    // ===== AREA INFO / NEARBY PLACES - DYNAMIC EXTRACTION =====
+    const areaInfo = {};
+    
+    try {
+      // Helper to convert category name to key
+      const categoryToKey = (cat) => {
+        return cat.toLowerCase()
+          .replace(/&amp;/g, 'and')
+          .replace(/&/g, 'and')
+          .replace(/[''"]/g, '')
+          .replace(/[^a-z0-9]+/g, '_')
+          .replace(/^_|_$/g, '');
+      };
+      
+      // Find ALL category blocks dynamically
+      // Structure: <div class="e7addce19e...">CATEGORY</div></h3></div><ul...data-testid="poi-block-list"...>ITEMS</ul>
+      const categoryBlockPattern = /<div class="e7addce19e[^"]*">([^<]+)<\/div><\/h3><\/div><ul[^>]*data-testid="poi-block-list"[^>]*>([\s\S]*?)<\/ul>/gi;
+      let categoryMatch;
+      
+      while ((categoryMatch = categoryBlockPattern.exec(html)) !== null) {
+        const categoryName = decodeHtmlEntities(categoryMatch[1].trim());
+        const categoryKey = categoryToKey(categoryName);
+        const itemsHtml = categoryMatch[2];
+        
+        if (!categoryKey || categoryKey.length < 2) continue;
+        
+        const items = [];
+        
+        // Extract all items from this category block
+        // Item structure: class="aa225776f2...">NAME or <span>TYPE</span>NAME</div>...<div class="b99b6ef58f...">DISTANCE</div>
+        const itemPattern = /class="aa225776f2[^"]*">((?:<span[^>]*>([^<]+)<\/span>)?([^<]*))<\/div>[\s\S]*?class="b99b6ef58f[^"]*">(\d+\.?\d*)\s*(km|m)<\/div>/gi;
+        let itemMatch;
+        
+        while ((itemMatch = itemPattern.exec(itemsHtml)) !== null && items.length < 15) {
+          const type = itemMatch[2] ? itemMatch[2].trim() : null;  // Type from <span> (Restaurant, Train, etc.)
+          const name = decodeHtmlEntities(itemMatch[3].trim());     // Name after span or full name
+          const distance = itemMatch[4] + ' ' + itemMatch[5];
+          
+          if (name.length > 1) {
+            if (type) {
+              items.push({ type, name, distance });
+            } else {
+              items.push({ name, distance });
+            }
+          }
+        }
+        
+        if (items.length > 0) {
+          areaInfo[categoryKey] = items;
+        }
+      }
+      
+      // Airports from JSON (always available even when HTML lazy-loaded content missing)
+      // Pattern: "title":"Airport Name","subtitle":"(CODE) X km"
+      if (!areaInfo.closest_airports || areaInfo.closest_airports.length === 0) {
+        const airports = [];
+        const airportJsonPattern = /"title":"([^"]*Airport[^"]*)","subtitle":"\(([A-Z]+)\)\s*(\d+\.?\d*)\s*(km|mi)"/gi;
+        let airportMatch;
+        while ((airportMatch = airportJsonPattern.exec(html)) !== null) {
+          const name = decodeHtmlEntities(airportMatch[1].trim());
+          const code = airportMatch[2];
+          const distance = airportMatch[3] + ' ' + airportMatch[4];
+          if (airports.length < 5) {
+            airports.push({ name, code, distance });
+          }
+        }
+        if (airports.length > 0) {
+          areaInfo.closest_airports = airports;
+        }
+      }
+      
+      // Method 3: Fallback - extract from description if no area info found
+      if (Object.keys(areaInfo).length === 0) {
+        const descText = details.description || '';
+        const attractions = [];
+        const attractionPattern = /([A-Z][^.]*?)\s+is\s+(\d+\.?\d*)\s*(km|mi|miles?)\s+from/gi;
+        let attrMatch;
+        while ((attrMatch = attractionPattern.exec(descText)) !== null) {
+          const name = attrMatch[1].trim();
+          if (name.length > 3 && name.length < 60 && !/hotel|property|accommodation/i.test(name)) {
+            attractions.push({ name, distance: attrMatch[2] + ' ' + attrMatch[3] });
+          }
+        }
+        if (attractions.length > 0) {
+          areaInfo.nearby_from_description = attractions;
+        }
+        
+        // Airports from description
+        const airportDescMatch = descText.match(/nearest airport is ([^,]+),?\s*(\d+\.?\d*)\s*(km|mi)/i);
+        if (airportDescMatch) {
+          areaInfo.closest_airports = [{ 
+            name: airportDescMatch[1].trim(), 
+            distance: airportDescMatch[2] + ' ' + airportDescMatch[3] 
+          }];
+        }
+      }
+      
+      // Extract city from JSON
+      const locationJsonMatch = html.match(/"location"\s*:\s*\{[^}]*"city"\s*:\s*"([^"]+)"[^}]*\}/i);
+      if (locationJsonMatch) {
+        details.city = locationJsonMatch[1];
+      }
+    } catch (areaErr) {
+      console.error('[DETAILS] Area info extraction error:', areaErr.message);
+    }
+    
+    details.area_info = areaInfo;
+    
   } catch (e) {
     console.error('[DETAILS] Extraction error:', e.message);
   }
@@ -710,14 +841,42 @@ async function scrapeHotelDetailsWithPuppeteer(hotelURL) {
     await randomDelay(500, 1500);
     await page.goto(hotelURL, { waitUntil: 'networkidle2', timeout: TIMING.navigationTimeout });
     
+    // Wait for body to exist
+    await page.waitForSelector('body', { timeout: 10000 });
+    
+    // Additional wait for content to load
+    await randomDelay(1000, 1500);
+    
     // Dismiss overlays
     await dismissOverlays(page);
     
-    // Scroll to load lazy content
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
-    await randomDelay(1000, 2000);
+    // Scroll to trigger lazy loading - scroll to bottom where area info is
+    await page.evaluate(async () => {
+      const delay = (ms) => new Promise(r => setTimeout(r, ms));
+      const h = document.body?.scrollHeight || 5000;
+      
+      // Scroll down in steps
+      for (let i = 1; i <= 4; i++) {
+        window.scrollTo(0, (h / 4) * i);
+        await delay(300);
+      }
+      // Stay at bottom briefly
+      await delay(1000);
+      // Scroll back up
+      window.scrollTo(0, 0);
+    });
+    
+    // Wait for POI blocks to appear
+    try {
+      await page.waitForSelector('[data-testid="poi-block-list"]', { timeout: 5000 });
+    } catch (e) {
+      // POI block not found, continue anyway
+    }
+    
+    await randomDelay(500, 1000);
     
     const html = await page.content();
+    
     return extractHotelDetailsFromHTML(html);
     
   } finally {
