@@ -41,8 +41,8 @@ Search for hotels in a destination.
 ```javascript
 {
   location: "Dubai",
-  checkin: "2025-02-01",
-  checkout: "2025-02-05",
+  checkin: "2025-12-20",
+  checkout: "2025-12-25",
   adults: 2,
   children: 1,
   rooms: 1
@@ -58,6 +58,8 @@ Search for hotels in a destination.
 | children  | number | ❌       | Number of children (default: 0)      |
 | rooms     | number | ❌       | Number of rooms (default: 1)         |
 
+> **Note:** Prices are returned in USD (`currency: "$"`).
+
 #### Terminal
 
 ```bash
@@ -65,8 +67,8 @@ curl -s -X POST http://localhost:3000/api/hotels \
   -H "Content-Type: application/json" \
   -d '{
     "location": "New York",
-    "checkin": "2025-02-01",
-    "checkout": "2025-02-05",
+    "checkin": "2026-02-01",
+    "checkout": "2026-02-05",
     "adults": 2,
     "children": 1,
     "rooms": 1
@@ -80,8 +82,8 @@ const response = await this.httpService.axiosRef.post(
   `${BASE_URL}/api/hotels`,
   {
     location: "Dubai",
-    checkin: "2025-02-01",
-    checkout: "2025-02-05",
+    checkin: "2025-12-20",
+    checkout: "2025-12-25",
     adults: 2,
     children: 1,
     rooms: 1
@@ -122,7 +124,7 @@ Get detailed information about a specific hotel.
 curl -s -X POST http://localhost:3000/api/hotel-details \
   -H "Content-Type: application/json" \
   -d '{
-    "url": "https://www.booking.com/hotel/us/the-premier-new-york-new-york-city.html?checkin=2025-02-01&checkout=2025-02-05&group_adults=2&no_rooms=1&group_children=1"
+    "url": "https://www.booking.com/hotel/us/the-premier-new-york-new-york-city.html?checkin=2025-12-20&checkout=2025-12-25&group_adults=2&no_rooms=1&group_children=1"
   }' | jq '.'
 ```
 
@@ -166,21 +168,21 @@ return response.data;
 ```json
 {
   "success": true,
-  "location": "Dubai",
-  "checkin": "2025-02-01",
-  "checkout": "2025-02-05",
+  "location": "New York",
+  "count": 28,
+  "duration_seconds": 20.70,
   "hotels": [
     {
-      "name": "The St. Regis Downtown Dubai",
-      "url": "https://www.booking.com/hotel/ae/the-st-regis-downtown-dubai.html",
-      "price": "AED 1,500",
-      "rating": "9.2",
-      "reviewCount": "1,234",
-      "image": "https://cf.bstatic.com/..."
+      "name": "Candlewood Suites NYC - Times Square by IHG",
+      "link": "https://www.booking.com/hotel/us/candlewood-suites-new-york-city.html?checkin=2025-12-20&checkout=2025-12-25&group_adults=2&no_rooms=1",
+      "picture_url": "https://cf.bstatic.com/xdata/images/hotel/square240/...",
+      "rating": 8.4,
+      "reviews_count": 2384,
+      "location": "Hell's Kitchen, New York - 1.6 km from downtown",
+      "price_per_night": "1350",
+      "currency": "$"
     }
-  ],
-  "total": 25,
-  "duration": 5.23
+  ]
 }
 ```
 
