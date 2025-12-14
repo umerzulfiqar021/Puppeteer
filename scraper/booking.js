@@ -36,7 +36,8 @@ function buildSearchURL(location, options = {}) {
     group_adults: String(options.adults || 2),
     no_rooms: String(options.rooms || 1),
     group_children: String(options.children || 0),
-    lang: 'en-us'
+    lang: 'en-us',
+    selected_currency: options.currency || 'USD'  // Force currency to help show prices
   });
   
   return `${base}?${params.toString()}`;
@@ -192,9 +193,23 @@ function extractHotelsFromHTML(html) {
         location = location ? `${location} - ${dist}` : dist;
       }
       
-      // Extract price
-      const priceMatch = cardHtml.match(/data-testid="price-and-discounted-price"[\s\S]*?([\d,]+)/);
-      const pricePerNight = priceMatch ? priceMatch[1].replace(/,/g, '') : null;
+      // Extract price - try multiple patterns
+      let pricePerNight = null;
+      const pricePatterns = [
+        /data-testid="price-and-discounted-price"[^>]*>[^<]*?(\d[\d,\.]+)/,
+        /data-testid="price"[^>]*>[^<]*?(\d[\d,\.]+)/,
+        /"displayedPrice"[^}]*?"amount":(\d+)/,
+        /class="[^"]*price[^"]*"[^>]*>[^\d]*(\d[\d,\.]+)/i,
+        /(\d[\d,]*)\s*(?:USD|EUR|GBP|AED|INR|\$|€|£)/,
+        /(?:USD|EUR|GBP|AED|INR|\$|€|£)\s*(\d[\d,]*)/
+      ];
+      for (const pattern of pricePatterns) {
+        const match = cardHtml.match(pattern);
+        if (match) {
+          pricePerNight = match[1].replace(/,/g, '');
+          break;
+        }
+      }
       
       if (name) {
         hotels.push({ name, link, picture_url: pictureUrl, rating, reviews_count: reviewsCount, location, price_per_night: pricePerNight });
@@ -225,7 +240,8 @@ async function scrapeWithPuppeteer(searchURL) {
       '--disable-accelerated-2d-canvas',
       '--disable-gpu',
       '--window-size=1920,1080',
-      '--disable-blink-features=AutomationControlled'
+      '--disable-blink-features=AutomationControlled',
+      '--lang=en-US'
     ]
   });
   
@@ -233,6 +249,21 @@ async function scrapeWithPuppeteer(searchURL) {
     const page = await browser.newPage();
     await page.setUserAgent(userAgent);
     await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+    
+    // Set cookies to appear as returning visitor
+    await page.setCookie({
+      name: 'pcm_personalization_disabled',
+      value: '0',
+      domain: '.booking.com'
+    }, {
+      name: 'bkng_sso_session',
+      value: 'e30',
+      domain: '.booking.com'  
+    }, {
+      name: 'cors_js',
+      value: '1',
+      domain: '.booking.com'
+    });
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9',
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
@@ -261,6 +292,14 @@ async function scrapeWithPuppeteer(searchURL) {
     console.log('[SCRAPER] Scrolling to load content...');
     await autoScroll(page, TIMING.scrollIterations, TIMING.scrollPause);
     await randomDelay(2000, 3000);
+    
+    // Try to wait for prices to load (they may be loaded after scroll)
+    try {
+      await page.waitForSelector('[data-testid="price-and-discounted-price"], [data-testid="price"]', { timeout: 5000 });
+      console.log('[SCRAPER] Price elements detected');
+    } catch (e) {
+      console.log('[SCRAPER] No price elements found - prices may show as "Show prices" button');
+    }
     
     // Extract hotel data
     console.log('[SCRAPER] Extracting hotel data...');
@@ -313,15 +352,51 @@ async function scrapeWithPuppeteer(searchURL) {
           }
           
           let pricePerNight = null;
-          const priceEl = card.querySelector('[data-testid="price-and-discounted-price"]');
-          if (priceEl) {
-            const priceText = priceEl.textContent;
-            const priceMatch = priceText.match(/([\d,]+)/);
-            if (priceMatch) pricePerNight = priceMatch[1].replace(/,/g, '');
+          let currency = null;
+          // Try multiple selectors for price - Booking.com uses various patterns
+          const priceSelectors = [
+            '[data-testid="price-and-discounted-price"]',
+            '[data-testid="price"]',
+            '[data-testid="recommended-units"] [data-testid="price-and-discounted-price"]',
+            '.f6431b446c', // Booking.com price class
+            '.fbd1d3018c', // Another price class
+            '.fcab3ed991 .f6431b446c', // Container > price
+            '[class*="priceDisplay"]',
+            '[class*="price-primary"]'
+          ];
+          for (const selector of priceSelectors) {
+            const priceEl = card.querySelector(selector);
+            if (priceEl) {
+              const priceText = priceEl.textContent;
+              // Match currency + number or number + currency
+              const priceMatch = priceText.match(/(?:[A-Z]{3}|[$€£¥])\s*(\d[\d,\.]+)|(\d[\d,\.]+)\s*(?:[A-Z]{3}|[$€£¥])/);
+              if (priceMatch) {
+                pricePerNight = (priceMatch[1] || priceMatch[2]).replace(/,/g, '');
+                // Try to get currency
+                const currMatch = priceText.match(/([A-Z]{3}|[$€£¥])/);
+                if (currMatch) currency = currMatch[1];
+                break;
+              }
+              // Fallback: just find any number
+              const numMatch = priceText.match(/(\d[\d,\.]+)/);
+              if (numMatch) {
+                pricePerNight = numMatch[1].replace(/,/g, '');
+                break;
+              }
+            }
           }
           
           if (name) {
-            results.push({ name, link, picture_url: pictureUrl, rating, reviews_count: reviewsCount, location, price_per_night: pricePerNight });
+            results.push({ 
+              name, 
+              link, 
+              picture_url: pictureUrl, 
+              rating, 
+              reviews_count: reviewsCount, 
+              location, 
+              price_per_night: pricePerNight,
+              currency: currency
+            });
           }
         } catch (e) {}
       });
