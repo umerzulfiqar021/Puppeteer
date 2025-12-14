@@ -1,48 +1,24 @@
 /**
  * local_server.js
  * 
- * Simple HTTP server for testing the scraper locally.
- * Accepts POST requests with JSON body containing location.
+ * HTTP API server for Booking.com hotel scraper.
+ * Accepts POST requests with location and returns hotel data.
+ * Designed to receive requests from your backend.
  * 
  * Usage: node local_server.js
- * Test: curl -X POST http://localhost:3000/scrape -H "Content-Type: application/json" -d '{"location":"Paris"}'
+ * 
+ * Endpoints:
+ *   POST /api/hotels - Scrape hotels for a location
+ *   GET  /api/health - Health check endpoint
  */
 
+require('dotenv').config();
 const http = require('http');
 const { scrapeBookingHotels } = require('./scraper/booking');
 
 // Server configuration
 const PORT = process.env.PORT || 3000;
-const HOST = '0.0.0.0';
-
-/**
- * Build a Booking.com search URL from location name.
- * @param {string} location - Search location
- * @returns {string} Complete search URL
- */
-function buildSearchURL(location) {
-  const base = 'https://www.booking.com/searchresults.html';
-  
-  const now = new Date();
-  const checkin = new Date(now);
-  checkin.setDate(now.getDate() + 1);
-  const checkout = new Date(checkin);
-  checkout.setDate(checkin.getDate() + 2);
-  
-  const formatDate = (d) => d.toISOString().split('T')[0];
-  
-  const params = new URLSearchParams({
-    ss: location,
-    checkin: formatDate(checkin),
-    checkout: formatDate(checkout),
-    group_adults: '2',
-    no_rooms: '1',
-    group_children: '0',
-    lang: 'en-us'
-  });
-  
-  return `${base}?${params.toString()}`;
-}
+const HOST = process.env.HOST || '0.0.0.0';
 
 /**
  * Parse request body as JSON
@@ -55,9 +31,13 @@ function parseBody(req) {
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
       try {
-        resolve(JSON.parse(body));
+        if (!body) {
+          resolve({});
+        } else {
+          resolve(JSON.parse(body));
+        }
       } catch (e) {
-        reject(new Error('Invalid JSON'));
+        reject(new Error('Invalid JSON body'));
       }
     });
     req.on('error', reject);
@@ -65,66 +45,177 @@ function parseBody(req) {
 }
 
 /**
- * HTTP request handler
+ * Send JSON response
  */
-async function requestHandler(req, res) {
-  // Set CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  
-  // Handle preflight
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-  
-  // Only handle POST /scrape
-  if (req.method !== 'POST' || req.url !== '/scrape') {
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Not found. Use POST /scrape' }));
-    return;
-  }
-  
+function sendJSON(res, statusCode, data) {
+  res.writeHead(statusCode, { 
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+  });
+  res.end(JSON.stringify(data));
+}
+
+/**
+ * Handle /api/hotels endpoint
+ * 
+ * Request body:
+ * {
+ *   "location": "Paris",           // Required: city/region to search
+ *   "checkin": "2025-01-15",       // Optional: check-in date (YYYY-MM-DD)
+ *   "checkout": "2025-01-17",      // Optional: check-out date (YYYY-MM-DD)
+ *   "adults": 2,                   // Optional: number of adults (default: 2)
+ *   "rooms": 1,                    // Optional: number of rooms (default: 1)
+ *   "useZyte": false               // Optional: force Zyte proxy usage
+ * }
+ * 
+ * Response:
+ * {
+ *   "success": true,
+ *   "location": "Paris",
+ *   "count": 25,
+ *   "hotels": [...]
+ * }
+ */
+async function handleHotelsEndpoint(req, res) {
   try {
     // Parse request body
     const body = await parseBody(req);
     
-    if (!body.location) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing "location" field' }));
-      return;
+    // Validate required field
+    if (!body.location || typeof body.location !== 'string') {
+      return sendJSON(res, 400, {
+        success: false,
+        error: 'Missing or invalid "location" field. Expected a string.'
+      });
     }
     
-    console.log('[SERVER] Scraping hotels for:', body.location);
+    const location = body.location.trim();
+    if (!location) {
+      return sendJSON(res, 400, {
+        success: false,
+        error: 'Location cannot be empty'
+      });
+    }
     
-    // Build URL and scrape
-    const searchURL = buildSearchURL(body.location);
-    const hotels = await scrapeBookingHotels(searchURL);
+    console.log(`[SERVER] Received request for location: ${location}`);
+    
+    // Build options from request body
+    const options = {
+      checkin: body.checkin || null,
+      checkout: body.checkout || null,
+      adults: body.adults || 2,
+      rooms: body.rooms || 1,
+      useZyte: body.useZyte || false
+    };
+    
+    // Run the scraper
+    const startTime = Date.now();
+    const hotels = await scrapeBookingHotels(location, options);
+    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+    
+    console.log(`[SERVER] Scraped ${hotels.length} hotels in ${duration}s`);
     
     // Send response
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    return sendJSON(res, 200, {
       success: true,
-      location: body.location,
+      location: location,
       count: hotels.length,
+      duration_seconds: parseFloat(duration),
       hotels: hotels
-    }));
+    });
     
   } catch (error) {
     console.error('[SERVER] Error:', error.message);
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: error.message }));
+    return sendJSON(res, 500, {
+      success: false,
+      error: error.message
+    });
   }
+}
+
+/**
+ * Handle /api/health endpoint
+ */
+function handleHealthEndpoint(req, res) {
+  return sendJSON(res, 200, {
+    status: 'ok',
+    service: 'booking-scraper',
+    timestamp: new Date().toISOString(),
+    zyte_configured: !!process.env.ZYTE_API_KEY
+  });
+}
+
+/**
+ * Main request handler
+ */
+async function requestHandler(req, res) {
+  const url = req.url.split('?')[0];  // Remove query params
+  
+  // Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Max-Age': '86400'
+    });
+    return res.end();
+  }
+  
+  // Route requests
+  if (url === '/api/hotels' && req.method === 'POST') {
+    return handleHotelsEndpoint(req, res);
+  }
+  
+  if (url === '/api/health' && req.method === 'GET') {
+    return handleHealthEndpoint(req, res);
+  }
+  
+  // Legacy endpoint for backwards compatibility
+  if (url === '/scrape' && req.method === 'POST') {
+    return handleHotelsEndpoint(req, res);
+  }
+  
+  // 404 for unknown routes
+  return sendJSON(res, 404, {
+    success: false,
+    error: 'Not found',
+    available_endpoints: [
+      'POST /api/hotels - Scrape hotels for a location',
+      'GET  /api/health - Health check'
+    ]
+  });
 }
 
 // Create and start server
 const server = http.createServer(requestHandler);
 
 server.listen(PORT, HOST, () => {
-  console.log(`[SERVER] Booking.com scraper server running at http://${HOST}:${PORT}`);
-  console.log('[SERVER] Endpoints:');
-  console.log('  POST /scrape - Scrape hotels for a location');
-  console.log('  Body: {"location": "city name"}');
+  console.log('====================================');
+  console.log('  Booking.com Hotel Scraper API');
+  console.log('====================================');
+  console.log(`Server running at http://${HOST}:${PORT}`);
+  console.log('');
+  console.log('Endpoints:');
+  console.log('  POST /api/hotels - Scrape hotels');
+  console.log('  GET  /api/health - Health check');
+  console.log('');
+  console.log('Example request:');
+  console.log(`  curl -X POST http://localhost:${PORT}/api/hotels \\`);
+  console.log('    -H "Content-Type: application/json" \\');
+  console.log('    -d \'{"location":"Paris"}\'');
+  console.log('');
+  console.log('Zyte API:', process.env.ZYTE_API_KEY ? 'Configured' : 'Not configured');
+  console.log('====================================');
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('[SERVER] Received SIGTERM, shutting down...');
+  server.close(() => {
+    console.log('[SERVER] Server closed');
+    process.exit(0);
+  });
 });
