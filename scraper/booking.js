@@ -255,11 +255,23 @@ async function scrapeWithPuppeteer(searchURL) {
   if (isServerless) {
     // Serverless: use @sparticuz/chromium
     console.log('[SCRAPER] Launching serverless Chromium...');
+    const execPath = await chromium.executablePath();
+    console.log('[SCRAPER] Chromium path:', execPath);
+    
     browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless,
+      args: [
+        ...chromium.args,
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process',
+        '--no-zygote',
+      ],
+      defaultViewport: { width: 1920, height: 1080 },
+      executablePath: execPath,
+      headless: true,
+      ignoreHTTPSErrors: true,
     });
   } else {
     // Local: use regular puppeteer
@@ -281,7 +293,11 @@ async function scrapeWithPuppeteer(searchURL) {
   try {
     const page = await browser.newPage();
     await page.setUserAgent(userAgent);
-    await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+    
+    // Skip viewport for serverless (use default)
+    if (!isServerless) {
+      await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+    }
     
     // Set cookies to appear as returning visitor
     await page.setCookie({
@@ -303,10 +319,14 @@ async function scrapeWithPuppeteer(searchURL) {
     });
     
     console.log('[SCRAPER] Navigating to search URL...');
-    await randomDelay(500, 1500);
     
-    await page.goto(searchURL, { waitUntil: 'networkidle2', timeout: TIMING.navigationTimeout });
+    // Use domcontentloaded for faster loading in serverless
+    const waitUntil = isServerless ? 'domcontentloaded' : 'networkidle2';
+    await page.goto(searchURL, { waitUntil, timeout: TIMING.navigationTimeout });
     console.log('[SCRAPER] Page loaded');
+    
+    // Wait a bit for dynamic content
+    await randomDelay(2000, 3000);
     
     // Dismiss overlays
     await dismissOverlays(page);
@@ -1045,11 +1065,22 @@ async function scrapeHotelDetailsWithPuppeteer(hotelURL) {
   if (isServerless) {
     // Serverless: use @sparticuz/chromium
     console.log('[SCRAPER] Launching serverless Chromium...');
+    const execPath = await chromium.executablePath();
+    
     browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless,
+      args: [
+        ...chromium.args,
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process',
+        '--no-zygote',
+      ],
+      defaultViewport: { width: 1920, height: 1080 },
+      executablePath: execPath,
+      headless: true,
+      ignoreHTTPSErrors: true,
     });
   } else {
     // Local: use regular puppeteer
@@ -1068,19 +1099,23 @@ async function scrapeHotelDetailsWithPuppeteer(hotelURL) {
   try {
     const page = await browser.newPage();
     await page.setUserAgent(userAgent);
-    await page.setViewport({ width: 1920, height: 1080 });
+    
+    if (!isServerless) {
+      await page.setViewport({ width: 1920, height: 1080 });
+    }
+    
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9'
     });
     
-    await randomDelay(500, 1500);
-    await page.goto(hotelURL, { waitUntil: 'networkidle2', timeout: TIMING.navigationTimeout });
+    const waitUntil = isServerless ? 'domcontentloaded' : 'networkidle2';
+    await page.goto(hotelURL, { waitUntil, timeout: TIMING.navigationTimeout });
     
     // Wait for body to exist
     await page.waitForSelector('body', { timeout: 10000 });
     
     // Additional wait for content to load
-    await randomDelay(1000, 1500);
+    await randomDelay(2000, 3000);
     
     // Dismiss overlays
     await dismissOverlays(page);
