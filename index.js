@@ -4,6 +4,9 @@
  * Handles HTTP requests for the Booking.com scraper API.
  */
 
+// Set environment variable to indicate serverless mode
+process.env.APPWRITE_FUNCTION_ID = process.env.APPWRITE_FUNCTION_ID || 'appwrite';
+
 const { scrapeBookingHotels, scrapeHotelDetails } = require('./scraper/booking');
 
 /**
