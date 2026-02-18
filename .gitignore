@@ -23,3 +23,5 @@ Thumbs.db
 postman_collection.json
 API_USAGE.md
 NESTJS_INTEGRATION.md
+DEPLOY.md
+./DEPLOY.md
