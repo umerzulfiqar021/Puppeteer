@@ -396,7 +396,15 @@ async function scrapeWithPuppeteer(searchURL) {
         console.log('[SCRAPER] No hotel elements found at all');
         const title = await page.title();
         console.log('[SCRAPER] Page title:', title);
-        return [];
+        return { 
+          hotels: [], 
+          debugInfo: { 
+            title, 
+            contentLength: pageContent.length, 
+            finalUrl: page.url(),
+            error: 'No hotel elements found'
+          } 
+        };
       }
     }
     
@@ -590,6 +598,7 @@ async function scrapeBookingHotels(location, options = {}) {
   const useZyte = options.useZyte || (zyteApiKey && process.env.USE_ZYTE === 'true');
   
   let hotels = [];
+  let debugInfo = {};
   
   try {
     // Priority 1: Use Zyte API if configured
