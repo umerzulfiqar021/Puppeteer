@@ -5,7 +5,8 @@
   "main": "scraper/index.js",
   "packageManager": "yarn@1.22.22",
   "scripts": {
-    "start": "node scraper/index.js",
+    "start": "node local_server.js",
+    "cli": "node scraper/index.js",
     "server": "node local_server.js",
     "build": "echo 'No build step required'",
     "test": "echo '{\"location\":\"murree\"}' | node scraper/index.js"

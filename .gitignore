@@ -20,4 +20,6 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
-./postman_collection.json
+postman_collection.json
+API_USAGE.md
+NESTJS_INTEGRATION.md
