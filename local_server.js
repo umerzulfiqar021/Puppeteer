@@ -210,7 +210,13 @@ async function handleHotelDetailsEndpoint(req, res) {
  * Main request handler
  */
 async function requestHandler(req, res) {
-  const url = req.url.split('?')[0];  // Remove query params
+  let url = req.url.split('?')[0];  // Remove query params
+  
+  // Normalize URL: remove trailing slash (unless root) and replace multiple slashes
+  url = url.replace(/\/+/g, '/');
+  if (url.length > 1 && url.endsWith('/')) {
+    url = url.slice(0, -1);
+  }
   
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
