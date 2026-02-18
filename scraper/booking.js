@@ -327,6 +327,7 @@ async function scrapeWithPuppeteer(searchURL) {
       domain: '.booking.com'  
     }, {
       name: 'cors_js',
+      value: '1',
       domain: '.booking.com'
     });
     await page.setExtraHTTPHeaders({
