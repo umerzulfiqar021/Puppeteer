@@ -238,76 +238,6 @@ async function handleWeatherEndpoint(req, res) {
   }
 }
 
-// In-memory store for reset codes (Temporary - should use DB)
-const resetCodes = new Map();
-
-/**
- * Handle /api/forgot-password endpoint
- */
-async function handleForgotPasswordEndpoint(req, res) {
-  try {
-    const body = await parseBody(req);
-    const email = body.email;
-    
-    if (!email) {
-      return sendJSON(res, 400, { success: false, error: 'Email is required' });
-    }
-    
-    console.log(`[SERVER] Forgot password request for: ${email}`);
-    
-    // Generate 6-digit code
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    resetCodes.set(email, { code, expires: Date.now() + 15 * 60 * 1000 }); // 15 min expiry
-    
-    console.log(`[AUTH] DEBUG: Verification code for ${email} is: ${code}`);
-    
-    // Placeholder for email sending logic (as requested to use same as signup)
-    // In a real app, you would use nodemailer here:
-    // await sendVerificationEmail(email, code);
-    
-    return sendJSON(res, 200, {
-      success: true,
-      message: 'Verification code sent to your email (DEBUG: check server logs)',
-      email
-    });
-  } catch (error) {
-    return sendJSON(res, 500, { success: false, error: error.message });
-  }
-}
-
-/**
- * Handle /api/reset-password endpoint
- */
-async function handleResetPasswordEndpoint(req, res) {
-  try {
-    const body = await parseBody(req);
-    const { email, code, newPassword } = body;
-    
-    if (!email || !code || !newPassword) {
-      return sendJSON(res, 400, { success: false, error: 'Email, code, and newPassword are required' });
-    }
-    
-    const stored = resetCodes.get(email);
-    
-    if (!stored || stored.code !== code || Date.now() > stored.expires) {
-      return sendJSON(res, 400, { success: false, error: 'Invalid or expired verification code' });
-    }
-    
-    console.log(`[SERVER] Password updated for: ${email}`);
-    
-    // Placeholder for DB update
-    // await User.updatePassword(email, newPassword);
-    
-    resetCodes.delete(email); // Code used
-    
-    return sendJSON(res, 200, {
-      success: true,
-      message: 'Password has been updated successfully'
-    });
-  } catch (error) {
-    return sendJSON(res, 500, { success: false, error: error.message });
-  }
-}
 
 /**
  * Main request handler
@@ -341,8 +271,6 @@ async function requestHandler(req, res) {
         'POST /api/hotels': 'Scrape hotels for a location',
         'POST /api/hotel-details': 'Get detailed info for a specific hotel',
         'POST /api/weather': 'Get weather data for a location',
-        'POST /api/forgot-password': 'Request password reset code',
-        'POST /api/reset-password': 'Reset password with code',
         'GET /api/health': 'Health check'
       },
       documentation: 'https://github.com/umerzulfiqar021/Puppeteer'
@@ -350,7 +278,7 @@ async function requestHandler(req, res) {
   }
 
   // Handle incorrect methods for API endpoints
-  const postOnlyEndpoints = ['/api/hotels', '/api/hotel-details', '/api/weather', '/api/forgot-password', '/api/reset-password'];
+  const postOnlyEndpoints = ['/api/hotels', '/api/hotel-details', '/api/weather'];
   if (postOnlyEndpoints.includes(url) && req.method !== 'POST') {
     console.log(`[SERVER] Method Not Allowed: Received ${req.method} for ${url}`);
     return sendJSON(res, 405, {
@@ -371,14 +299,6 @@ async function requestHandler(req, res) {
   
   if (url === '/api/weather' && req.method === 'POST') {
     return handleWeatherEndpoint(req, res);
-  }
-  
-  if (url === '/api/forgot-password' && req.method === 'POST') {
-    return handleForgotPasswordEndpoint(req, res);
-  }
-  
-  if (url === '/api/reset-password' && req.method === 'POST') {
-    return handleResetPasswordEndpoint(req, res);
   }
   
   if (url === '/api/health' && req.method === 'GET') {

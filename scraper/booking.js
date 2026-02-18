@@ -382,6 +382,9 @@ async function scrapeWithPuppeteer(searchURL) {
     // Dismiss overlays
     await dismissOverlays(page);
     
+    // Wait for content to settle
+    await randomDelay(2000, 4000);
+    
     // Wait for hotel cards with longer timeout for serverless
     console.log('[SCRAPER] Waiting for hotel listings...');
     const cardSelectors = [
@@ -395,7 +398,7 @@ async function scrapeWithPuppeteer(searchURL) {
     let foundSelector = null;
     for (const selector of cardSelectors) {
       try {
-        await page.waitForSelector(selector, { timeout: 3000 });
+        await page.waitForSelector(selector, { timeout: 5000 });
         console.log(`[SCRAPER] Hotel cards detected with selector: ${selector}`);
         foundSelector = selector;
         break;
@@ -406,13 +409,20 @@ async function scrapeWithPuppeteer(searchURL) {
     
     if (!foundSelector) {
       console.log('[SCRAPER] No hotel elements found with any selector');
+      
+      // Check for common block indicators
+      const isBlocked = pageContent.toLowerCase().includes('robot') || 
+                        pageContent.toLowerCase().includes('captcha') ||
+                        title.includes('Access Denied');
+      
       return { 
         hotels: [], 
         debugInfo: { 
           title, 
           contentLength: pageContent.length, 
           finalUrl: page.url(),
-          error: 'No hotel elements found after trying all selectors'
+          isBlocked,
+          error: isBlocked ? 'Rate limited or blocked by Booking.com' : 'No hotel elements found after trying all selectors'
         } 
       };
     }
