@@ -245,9 +245,10 @@ async function requestHandler(req, res) {
 
   // Handle incorrect methods for API endpoints
   if ((url === '/api/hotels' || url === '/api/hotel-details') && req.method !== 'POST') {
+    console.log(`[SERVER] Method Not Allowed: Received ${req.method} for ${url}`);
     return sendJSON(res, 405, {
       success: false,
-      error: 'Method Not Allowed. This endpoint requires POST method.',
+      error: `Method Not Allowed. This endpoint requires POST method. Received: ${req.method}`,
       hint: 'Check your request method and try again.'
     });
   }
