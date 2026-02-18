@@ -210,7 +210,13 @@ async function handleHotelDetailsEndpoint(req, res) {
  * Main request handler
  */
 async function requestHandler(req, res) {
-  const url = req.url.split('?')[0];  // Remove query params
+  let url = req.url.split('?')[0];  // Remove query params
+  
+  // Normalize URL: remove trailing slash (unless root) and replace multiple slashes
+  url = url.replace(/\/+/g, '/');
+  if (url.length > 1 && url.endsWith('/')) {
+    url = url.slice(0, -1);
+  }
   
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -223,6 +229,29 @@ async function requestHandler(req, res) {
     return res.end();
   }
   
+  // Handle root path
+  if (url === '/' && req.method === 'GET') {
+    return sendJSON(res, 200, {
+      success: true,
+      message: 'Booking.com Scraper API is running',
+      endpoints: {
+        'POST /api/hotels': 'Scrape hotels for a location',
+        'POST /api/hotel-details': 'Get detailed info for a specific hotel',
+        'GET /api/health': 'Health check'
+      },
+      documentation: 'https://github.com/umerzulfiqar021/Puppeteer'
+    });
+  }
+
+  // Handle incorrect methods for API endpoints
+  if ((url === '/api/hotels' || url === '/api/hotel-details') && req.method !== 'POST') {
+    return sendJSON(res, 405, {
+      success: false,
+      error: 'Method Not Allowed. This endpoint requires POST method.',
+      hint: 'Check your request method and try again.'
+    });
+  }
+
   // Route requests
   if (url === '/api/hotels' && req.method === 'POST') {
     return handleHotelsEndpoint(req, res);
