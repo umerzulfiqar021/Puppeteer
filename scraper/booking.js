@@ -341,8 +341,8 @@ async function scrapeWithPuppeteer(searchURL) {
       const resourceType = req.resourceType();
       const url = req.url();
       
-      // Block images, fonts, stylesheets, media, and third-party scripts
-      if (['image', 'font', 'stylesheet', 'media'].includes(resourceType) || 
+      // Block images, fonts, media, and third-party scripts (keep stylesheets for layout)
+      if (['image', 'font', 'media'].includes(resourceType) || 
           url.includes('google-analytics') || 
           url.includes('doubleclick') || 
           url.includes('facebook')) {
@@ -357,7 +357,7 @@ async function scrapeWithPuppeteer(searchURL) {
     
     // Use load for serverless to ensure page is ready
     try {
-      await page.goto(searchURL, { waitUntil: 'load', timeout: 60000 });
+      await page.goto(searchURL, { waitUntil: 'networkidle2', timeout: 60000 });
       console.log('[SCRAPER] Page loaded');
     } catch (navError) {
       console.log('[SCRAPER] Navigation error:', navError.message);
@@ -365,17 +365,18 @@ async function scrapeWithPuppeteer(searchURL) {
     }
     
     // Wait for network to settle
-    await randomDelay(3000, 5000);
+    await randomDelay(2000, 3000);
     
     // Check if page has content
     const pageContent = await page.content();
     console.log('[SCRAPER] Page content length:', pageContent.length);
     
-    if (pageContent.length < 10000) {
-      console.log('[SCRAPER] Page seems empty or blocked');
-      // Save debug info
-      const title = await page.title();
-      console.log('[SCRAPER] Page title:', title);
+    // Save debug info
+    const title = await page.title();
+    console.log('[SCRAPER] Page title:', title);
+    
+    if (pageContent.length < 5000 || title.includes('Access Denied')) {
+      console.log('[SCRAPER] Page seems empty, blocked, or access denied');
     }
     
     // Dismiss overlays
@@ -383,29 +384,37 @@ async function scrapeWithPuppeteer(searchURL) {
     
     // Wait for hotel cards with longer timeout for serverless
     console.log('[SCRAPER] Waiting for hotel listings...');
-    try {
-      await page.waitForSelector('[data-testid="property-card"]', { timeout: 15000 });
-      console.log('[SCRAPER] Hotel cards detected');
-    } catch (e) {
-      console.log('[SCRAPER] No hotel cards found after waiting');
-      // Try alternative selector
+    const cardSelectors = [
+      '[data-testid="property-card"]',
+      '.sr_property_block',
+      '[data-hotelid]',
+      '.hotel_name_link',
+      '.c-sr-hotel-card'
+    ];
+    
+    let foundSelector = null;
+    for (const selector of cardSelectors) {
       try {
-        await page.waitForSelector('.sr_property_block, .hotel_name_link, [data-hotelid]', { timeout: 5000 });
-        console.log('[SCRAPER] Found alternative hotel elements');
-      } catch (e2) {
-        console.log('[SCRAPER] No hotel elements found at all');
-        const title = await page.title();
-        console.log('[SCRAPER] Page title:', title);
-        return { 
-          hotels: [], 
-          debugInfo: { 
-            title, 
-            contentLength: pageContent.length, 
-            finalUrl: page.url(),
-            error: 'No hotel elements found'
-          } 
-        };
+        await page.waitForSelector(selector, { timeout: 3000 });
+        console.log(`[SCRAPER] Hotel cards detected with selector: ${selector}`);
+        foundSelector = selector;
+        break;
+      } catch (e) {
+        // Continue to next selector
       }
+    }
+    
+    if (!foundSelector) {
+      console.log('[SCRAPER] No hotel elements found with any selector');
+      return { 
+        hotels: [], 
+        debugInfo: { 
+          title, 
+          contentLength: pageContent.length, 
+          finalUrl: page.url(),
+          error: 'No hotel elements found after trying all selectors'
+        } 
+      };
     }
     
     // Scroll to load lazy content
@@ -423,21 +432,31 @@ async function scrapeWithPuppeteer(searchURL) {
     
     // Extract hotel data
     console.log('[SCRAPER] Extracting hotel data...');
-    const hotels = await page.evaluate(() => {
+    const hotels = await page.evaluate((selector) => {
       const results = [];
-      const cards = document.querySelectorAll('[data-testid="property-card"]');
+      const cards = document.querySelectorAll(selector);
       
       cards.forEach((card) => {
         try {
-          const titleEl = card.querySelector('[data-testid="title"]');
-          const name = titleEl ? titleEl.textContent.trim() : null;
+          // Name extraction
+          const nameSelectors = ['[data-testid="title"]', '.sr-hotel__name', '.fcab3ed991', 'h3'];
+          let name = null;
+          for (const s of nameSelectors) {
+            const el = card.querySelector(s);
+            if (el && el.textContent.trim()) {
+              name = el.textContent.trim();
+              break;
+            }
+          }
           
           let link = null;
-          const titleLink = card.querySelector('[data-testid="title-link"]');
-          if (titleLink) link = titleLink.href;
-          if (!link) {
-            const anyLink = card.querySelector('a[href*="/hotel/"]');
-            if (anyLink) link = anyLink.href;
+          const linkSelectors = ['[data-testid="title-link"]', 'a[data-testid="property-card-desktop-single-image"]', 'a.hotel_name_link', 'a[href*="/hotel/"]'];
+          for (const s of linkSelectors) {
+            const el = card.querySelector(s);
+            if (el && el.href) {
+              link = el.href;
+              break;
+            }
           }
           
           let pictureUrl = null;
@@ -522,9 +541,8 @@ async function scrapeWithPuppeteer(searchURL) {
       });
       
       return results;
-    });
+    }, foundSelector);
     
-    // Clean hotel URLs (remove tracking params)
     // Clean hotel URLs (remove tracking params)
     const cleanedHotels = hotels.map(hotel => ({
       ...hotel,
@@ -536,10 +554,65 @@ async function scrapeWithPuppeteer(searchURL) {
       title: await page.title(),
       contentLength: pageContent.length,
       finalUrl: page.url(),
-      screenshot: null // Placeholder for screenshot if needed
+      screenshot: null 
     };
     
     return { hotels: cleanedHotels, debugInfo };
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
+ * Weather Scraper - Scrapes weather data for a location
+ */
+async function scrapeWeather(location) {
+  console.log(`[WEATHER] Scraping weather for: ${location}`);
+  
+  const userAgent = getRandomUserAgent();
+  let browser;
+  
+  if (isServerless) {
+    const execPath = await chromium.executablePath();
+    browser = await puppeteer.launch({
+      args: [...chromium.args, '--no-sandbox'],
+      executablePath: execPath,
+      headless: true
+    });
+  } else {
+    browser = await puppeteer.launch({ headless: 'new' });
+  }
+  
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(userAgent);
+    
+    const weatherURL = `https://www.google.com/search?q=weather+in+${encodeURIComponent(location)}`;
+    await page.goto(weatherURL, { waitUntil: 'networkidle2', timeout: 30000 });
+    
+    const weatherData = await page.evaluate(() => {
+      try {
+        const temp = document.querySelector('#wob_tm')?.textContent || 
+                     document.querySelector('.wob_t')?.textContent || "N/A";
+        const unit = document.querySelector('#wob_u')?.textContent || "°C";
+        const condition = document.querySelector('#wob_dc')?.textContent || "N/A";
+        const humidity = document.querySelector('#wob_hm')?.textContent || "N/A";
+        const wind = document.querySelector('#wob_ws')?.textContent || "N/A";
+        const locationName = document.querySelector('#wob_loc')?.textContent || "N/A";
+        
+        return {
+          temperature: `${temp}${unit}`,
+          condition,
+          humidity,
+          wind,
+          location: locationName
+        };
+      } catch (e) {
+        return { error: 'Failed to parse weather data' };
+      }
+    });
+    
+    return weatherData;
   } finally {
     await browser.close();
   }
@@ -1317,4 +1390,4 @@ async function scrapeHotelDetails(hotelURL, options = {}) {
   }
 }
 
-module.exports = { scrapeBookingHotels, scrapeHotelDetails, buildSearchURL };
+module.exports = { scrapeBookingHotels, scrapeHotelDetails, buildSearchURL, scrapeWeather };
