@@ -252,7 +252,17 @@ async function scrapeWithPuppeteer(searchURL) {
   
   let browser;
   
-  if (isServerless) {
+  // Check for Browserless.io token (cloud browser service)
+  const browserlessToken = process.env.BROWSERLESS_TOKEN;
+  
+  if (browserlessToken) {
+    // Use Browserless.io cloud browser
+    console.log('[SCRAPER] Using Browserless.io cloud browser...');
+    const puppeteerCore = require('puppeteer-core');
+    browser = await puppeteerCore.connect({
+      browserWSEndpoint: `wss://chrome.browserless.io?token=${browserlessToken}`,
+    });
+  } else if (isServerless) {
     // Serverless: use @sparticuz/chromium
     console.log('[SCRAPER] Launching serverless Chromium...');
     const execPath = await chromium.executablePath();
@@ -319,26 +329,51 @@ async function scrapeWithPuppeteer(searchURL) {
     });
     
     console.log('[SCRAPER] Navigating to search URL...');
+    console.log('[SCRAPER] URL:', searchURL);
     
-    // Use domcontentloaded for faster loading in serverless
-    const waitUntil = isServerless ? 'domcontentloaded' : 'networkidle2';
-    await page.goto(searchURL, { waitUntil, timeout: TIMING.navigationTimeout });
-    console.log('[SCRAPER] Page loaded');
+    // Use load for serverless to ensure page is ready
+    try {
+      await page.goto(searchURL, { waitUntil: 'load', timeout: 60000 });
+      console.log('[SCRAPER] Page loaded');
+    } catch (navError) {
+      console.log('[SCRAPER] Navigation error:', navError.message);
+      // Try to continue anyway - page might have partial content
+    }
     
-    // Wait a bit for dynamic content
-    await randomDelay(2000, 3000);
+    // Wait for network to settle
+    await randomDelay(3000, 5000);
+    
+    // Check if page has content
+    const pageContent = await page.content();
+    console.log('[SCRAPER] Page content length:', pageContent.length);
+    
+    if (pageContent.length < 10000) {
+      console.log('[SCRAPER] Page seems empty or blocked');
+      // Save debug info
+      const title = await page.title();
+      console.log('[SCRAPER] Page title:', title);
+    }
     
     // Dismiss overlays
     await dismissOverlays(page);
     
-    // Wait for hotel cards
+    // Wait for hotel cards with longer timeout for serverless
     console.log('[SCRAPER] Waiting for hotel listings...');
     try {
-      await page.waitForSelector('[data-testid="property-card"]', { timeout: TIMING.selectorTimeout });
+      await page.waitForSelector('[data-testid="property-card"]', { timeout: 15000 });
       console.log('[SCRAPER] Hotel cards detected');
     } catch (e) {
-      console.log('[SCRAPER] No hotel cards found');
-      return [];
+      console.log('[SCRAPER] No hotel cards found after waiting');
+      // Try alternative selector
+      try {
+        await page.waitForSelector('.sr_property_block, .hotel_name_link, [data-hotelid]', { timeout: 5000 });
+        console.log('[SCRAPER] Found alternative hotel elements');
+      } catch (e2) {
+        console.log('[SCRAPER] No hotel elements found at all');
+        const title = await page.title();
+        console.log('[SCRAPER] Page title:', title);
+        return [];
+      }
     }
     
     // Scroll to load lazy content
@@ -515,30 +550,51 @@ async function scrapeBookingHotels(location, options = {}) {
   console.log('[SCRAPER] Starting Booking.com scraper...');
   console.log('[SCRAPER] Location:', location);
   console.log('[SCRAPER] Target URL:', searchURL);
+  console.log('[SCRAPER] Environment: ', isServerless ? 'SERVERLESS' : 'LOCAL');
   
   const zyteApiKey = process.env.ZYTE_API_KEY;
+  const browserlessToken = process.env.BROWSERLESS_TOKEN;
   const useZyte = options.useZyte || (zyteApiKey && process.env.USE_ZYTE === 'true');
   
   let hotels = [];
   
   try {
+    // Priority 1: Use Zyte API if configured
     if (useZyte && zyteApiKey) {
       try {
+        console.log('[SCRAPER] Using Zyte API...');
         hotels = await scrapeWithZyte(searchURL, zyteApiKey);
         
-        // If Zyte returned 0 hotels (redirect/search failed), fallback to Puppeteer
-        if (hotels.length === 0) {
+        if (hotels.length === 0 && !isServerless) {
           console.log('[SCRAPER] Zyte returned 0 hotels, falling back to Puppeteer...');
           hotels = await scrapeWithPuppeteer(searchURL);
         }
       } catch (zyteError) {
-        // If Zyte fails (out of credits, API error, etc.), fallback to local Puppeteer
         console.warn('[SCRAPER] Zyte API failed:', zyteError.message);
-        console.log('[SCRAPER] Falling back to local Puppeteer...');
-        hotels = await scrapeWithPuppeteer(searchURL);
+        if (!isServerless) {
+          console.log('[SCRAPER] Falling back to local Puppeteer...');
+          hotels = await scrapeWithPuppeteer(searchURL);
+        } else {
+          throw new Error('Zyte API failed and no fallback available in serverless: ' + zyteError.message);
+        }
       }
-    } else {
+    }
+    // Priority 2: Use Browserless if configured (for serverless)
+    else if (browserlessToken) {
+      console.log('[SCRAPER] Using Browserless.io...');
       hotels = await scrapeWithPuppeteer(searchURL);
+    }
+    // Priority 3: Use local Puppeteer (only works locally, not in Appwrite)
+    else if (!isServerless) {
+      console.log('[SCRAPER] Using local Puppeteer...');
+      hotels = await scrapeWithPuppeteer(searchURL);
+    }
+    // No scraping method available in serverless
+    else {
+      throw new Error(
+        'No scraping service configured for serverless environment. ' +
+        'Please set ZYTE_API_KEY or BROWSERLESS_TOKEN environment variable in Appwrite Console.'
+      );
     }
     
     console.log(`[SCRAPER] Successfully extracted ${hotels.length} hotels`);

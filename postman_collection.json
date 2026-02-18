@@ -1,0 +1,160 @@
+{
+	"info": {
+		"_postman_id": "b00k1ng-scr4p3r-4p1",
+		"name": "Booking Scraper API",
+		"description": "API collection for the Booking.com Scraper Service",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Hotels",
+			"item": [
+				{
+					"name": "Scrape Hotels",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"const moment = require('moment');",
+									"pm.environment.set('checkin', moment().add(1, 'days').format('YYYY-MM-DD'));",
+									"pm.environment.set('checkout', moment().add(3, 'days').format('YYYY-MM-DD'));"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"location\": \"Paris\",\n  \"checkin\": \"{{checkin}}\",\n  \"checkout\": \"{{checkout}}\",\n  \"adults\": 2,\n  \"rooms\": 1,\n  \"useZyte\": false\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/hotels",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"hotels"
+							]
+						},
+						"description": "Scrape hotels for a specific location and dates."
+					},
+					"response": []
+				},
+				{
+					"name": "Get Hotel Details",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"url\": \"https://www.booking.com/hotel/fr/ritz-paris.en-gb.html\",\n  \"useZyte\": false\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/hotel-details",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"hotel-details"
+							]
+						},
+						"description": "Get detailed information for a specific hotel by its Booking.com URL."
+					},
+					"response": []
+				},
+				{
+					"name": "Scrape Hotels (Legacy)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"location\": \"London\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/scrape",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"scrape"
+							]
+						},
+						"description": "Legacy endpoint for scraping hotels. Same functionality as /api/hotels."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "System",
+			"item": [
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/health",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"health"
+							]
+						},
+						"description": "Check if the API server is running."
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:3000",
+			"type": "string"
+		}
+	]
+}
