@@ -110,7 +110,14 @@ async function scrapeWithZyte(searchURL, zyteApiKey) {
   const hotels = extractHotelsFromHTML(html);
   
   console.log('[ZYTE] Extracted', hotels.length, 'hotels');
-  return hotels;
+  
+  const debugInfo = {
+     url: data.url,
+     contentLength: data.browserHtml?.length || 0,
+     title: null // Zyte doesn't easily give title unless parsed from HTML
+  };
+  
+  return { hotels, debugInfo };
 }
 
 /**
@@ -320,12 +327,28 @@ async function scrapeWithPuppeteer(searchURL) {
       domain: '.booking.com'  
     }, {
       name: 'cors_js',
-      value: '1',
       domain: '.booking.com'
     });
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9',
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    });
+    
+    // Enable request interception to block unnecessary resources
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const resourceType = req.resourceType();
+      const url = req.url();
+      
+      // Block images, fonts, stylesheets, media, and third-party scripts
+      if (['image', 'font', 'stylesheet', 'media'].includes(resourceType) || 
+          url.includes('google-analytics') || 
+          url.includes('doubleclick') || 
+          url.includes('facebook')) {
+        req.abort();
+      } else {
+        req.continue();
+      }
     });
     
     console.log('[SCRAPER] Navigating to search URL...');
@@ -493,12 +516,21 @@ async function scrapeWithPuppeteer(searchURL) {
     });
     
     // Clean hotel URLs (remove tracking params)
+    // Clean hotel URLs (remove tracking params)
     const cleanedHotels = hotels.map(hotel => ({
       ...hotel,
       link: cleanHotelUrl(hotel.link)
     }));
     
-    return cleanedHotels;
+    // Collect debug info
+    const debugInfo = {
+      title: await page.title(),
+      contentLength: pageContent.length,
+      finalUrl: page.url(),
+      screenshot: null // Placeholder for screenshot if needed
+    };
+    
+    return { hotels: cleanedHotels, debugInfo };
   } finally {
     await browser.close();
   }
@@ -563,17 +595,23 @@ async function scrapeBookingHotels(location, options = {}) {
     if (useZyte && zyteApiKey) {
       try {
         console.log('[SCRAPER] Using Zyte API...');
-        hotels = await scrapeWithZyte(searchURL, zyteApiKey);
+        const result = await scrapeWithZyte(searchURL, zyteApiKey);
+        hotels = result.hotels;
+        debugInfo = result.debugInfo;
         
         if (hotels.length === 0 && !isServerless) {
           console.log('[SCRAPER] Zyte returned 0 hotels, falling back to Puppeteer...');
-          hotels = await scrapeWithPuppeteer(searchURL);
+          const fallbackResult = await scrapeWithPuppeteer(searchURL);
+          hotels = fallbackResult.hotels;
+          debugInfo = fallbackResult.debugInfo;
         }
       } catch (zyteError) {
         console.warn('[SCRAPER] Zyte API failed:', zyteError.message);
         if (!isServerless) {
           console.log('[SCRAPER] Falling back to local Puppeteer...');
-          hotels = await scrapeWithPuppeteer(searchURL);
+          const fallbackResult = await scrapeWithPuppeteer(searchURL);
+          hotels = fallbackResult.hotels;
+          debugInfo = fallbackResult.debugInfo;
         } else {
           throw new Error('Zyte API failed and no fallback available in serverless: ' + zyteError.message);
         }
@@ -582,12 +620,16 @@ async function scrapeBookingHotels(location, options = {}) {
     // Priority 2: Use Browserless if configured (for serverless)
     else if (browserlessToken) {
       console.log('[SCRAPER] Using Browserless.io...');
-      hotels = await scrapeWithPuppeteer(searchURL);
+      const result = await scrapeWithPuppeteer(searchURL);
+      hotels = result.hotels;
+      debugInfo = result.debugInfo;
     }
     // Priority 3: Use local Puppeteer (only works locally, not in Appwrite)
     else if (!isServerless) {
       console.log('[SCRAPER] Using local Puppeteer...');
-      hotels = await scrapeWithPuppeteer(searchURL);
+      const result = await scrapeWithPuppeteer(searchURL);
+      hotels = result.hotels;
+      debugInfo = result.debugInfo;
     }
     // No scraping method available in serverless
     else {
@@ -603,10 +645,12 @@ async function scrapeBookingHotels(location, options = {}) {
       console.log('[SCRAPER] Sample hotel:', JSON.stringify(hotels[0], null, 2));
     }
     
-    return hotels;
+    // Attach debug info to the result
+    return { hotels, debugInfo: { method: useZyte ? 'zyte' : 'puppeteer', url: searchURL, count: hotels.length, ...debugInfo } };
   } catch (error) {
     console.error('[SCRAPER] Error:', error.message);
-    throw error;
+    // Return debug info even on error
+    return { hotels: [], debugInfo: { error: error.message, stack: error.stack, url: searchURL } };
   }
 }
 

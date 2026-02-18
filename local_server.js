@@ -113,7 +113,9 @@ async function handleHotelsEndpoint(req, res) {
     
     // Run the scraper
     const startTime = Date.now();
-    const hotels = await scrapeBookingHotels(location, options);
+    const result = await scrapeBookingHotels(location, options);
+    const hotels = result.hotels || [];
+    const debugInfo = result.debugInfo || {};
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
     
     console.log(`[SERVER] Scraped ${hotels.length} hotels in ${duration}s`);
@@ -124,7 +126,8 @@ async function handleHotelsEndpoint(req, res) {
       location: location,
       count: hotels.length,
       duration_seconds: parseFloat(duration),
-      hotels: hotels
+      hotels: hotels,
+      debug: debugInfo
     });
     
   } catch (error) {
