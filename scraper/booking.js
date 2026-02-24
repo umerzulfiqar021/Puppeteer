@@ -33,6 +33,9 @@ if (isServerless) {
 
 const { TIMING, getRandomUserAgent, randomDelay } = require('./config');
 
+// Helper for simple delays
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 /**
  * Build Booking.com search URL from location and optional dates.
  */
@@ -311,6 +314,11 @@ async function scrapeWithPuppeteer(searchURL) {
     const page = await browser.newPage();
     await page.setUserAgent(userAgent);
     
+    // Redirect browser console logs
+    page.on('console', msg => {
+      console.log(`[BROWSER-SEARCH] ${msg.text()}`);
+    });
+    
     // Skip viewport for serverless (use default)
     if (!isServerless) {
       await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
@@ -365,7 +373,7 @@ async function scrapeWithPuppeteer(searchURL) {
     }
     
     // Wait for network to settle
-    await randomDelay(2000, 3000);
+    await randomDelay(2500, 4500);
     
     // Check if page has content
     const pageContent = await page.content();
@@ -430,7 +438,10 @@ async function scrapeWithPuppeteer(searchURL) {
     // Scroll to load lazy content
     console.log('[SCRAPER] Scrolling to load content...');
     await autoScroll(page, TIMING.scrollIterations, TIMING.scrollPause);
-    await randomDelay(2000, 3000);
+    await randomDelay(1500, 2500);
+    
+    // Proactive overlay dismissal after scroll
+    await dismissOverlays(page);
     
     // Try to wait for prices to load (they may be loaded after scroll)
     try {
@@ -446,108 +457,59 @@ async function scrapeWithPuppeteer(searchURL) {
       const results = [];
       const cards = document.querySelectorAll(selector);
       
-      cards.forEach((card) => {
+      cards.forEach((card, i) => {
+        if (i >= 25) return;
         try {
-          // Name extraction
-          const nameSelectors = ['[data-testid="title"]', '.sr-hotel__name', '.fcab3ed991', 'h3'];
-          let name = null;
-          for (const s of nameSelectors) {
-            const el = card.querySelector(s);
-            if (el && el.textContent.trim()) {
-              name = el.textContent.trim();
-              break;
-            }
-          }
+          const cardText = card.innerText;
+          if (i === 0) console.log(`[DEBUG] Hotel 1 cardText: ${cardText.substring(0, 1000)}`);
           
-          let link = null;
-          const linkSelectors = ['[data-testid="title-link"]', 'a[data-testid="property-card-desktop-single-image"]', 'a.hotel_name_link', 'a[href*="/hotel/"]'];
-          for (const s of linkSelectors) {
-            const el = card.querySelector(s);
-            if (el && el.href) {
-              link = el.href;
-              break;
-            }
-          }
-          
-          let pictureUrl = null;
-          const imageContainer = card.querySelector('[data-testid="image"]');
-          if (imageContainer) {
-            const img = imageContainer.querySelector('img');
-            if (img) pictureUrl = img.src || img.getAttribute('data-src');
-          }
-          if (!pictureUrl) {
-            const anyImg = card.querySelector('img');
-            if (anyImg) pictureUrl = anyImg.src;
-          }
+          const nameEl = card.querySelector('[data-testid="title"]') || card.querySelector('.sr-hotel__name') || card.querySelector('h3');
+          if (!nameEl) return;
+          const name = nameEl.textContent.trim();
           
           let rating = null;
           let reviewsCount = null;
-          const reviewScore = card.querySelector('[data-testid="review-score"]');
-          if (reviewScore) {
-            const text = reviewScore.textContent;
-            const ratingMatch = text.match(/(\d+\.?\d*)/);
-            if (ratingMatch) rating = parseFloat(ratingMatch[1]);
-            const reviewsMatch = text.match(/(\d[\d,]*)\s*review/i);
-            if (reviewsMatch) reviewsCount = parseInt(reviewsMatch[1].replace(/,/g, ''), 10);
+          
+          // Pattern: "Scored 7.8", "7.8", "Good", "269 reviews"
+          const rMatch = cardText.match(/Scored\s+(\d+\.?\d*)/i) || 
+                         cardText.match(/(\d+\.\d)/);
+          if (rMatch) rating = parseFloat(rMatch[1]);
+          
+          const cMatch = cardText.match(/(\d[\d,]*)\s*(?:verified\s*)?reviews?/i);
+          if (cMatch) reviewsCount = parseInt(cMatch[1].replace(/,/g, ''), 10);
+          
+          const locationMatch = cardText.match(/([^\n]+)Show on map/i) || cardText.match(/(\d+\.?\d* km from downtown)/i);
+          const location = locationMatch ? locationMatch[1].trim() : (card.querySelector('[data-testid="address"]')?.textContent.trim() || null);
+          
+          const priceEl = card.querySelector('[data-testid="price-and-discounted-price"]') || card.querySelector('[data-testid="price"]');
+          let price = null;
+          if (priceEl) {
+            const pMatch = priceEl.textContent.match(/(\d[\d,]*)/);
+            if (pMatch) price = pMatch[1].replace(/,/g, '');
           }
           
-          let location = null;
-          const address = card.querySelector('[data-testid="address"]');
-          if (address) location = address.textContent.trim();
-          const distance = card.querySelector('[data-testid="distance"]');
-          if (distance) {
-            const distText = distance.textContent.trim();
-            location = location ? location + ' - ' + distText : distText;
+          const linkEl = card.querySelector('[data-testid="title-link"]') || card.querySelector('a[href*="/hotel/"]');
+          const link = linkEl ? linkEl.href : null;
+          
+          let pictureUrl = null;
+          const imgEl = card.querySelector('[data-testid="image"]') || card.querySelector('img');
+          if (imgEl) {
+            pictureUrl = imgEl.src || imgEl.getAttribute('data-src');
           }
           
-          let pricePerNight = null;
-          let currency = null;
-          // Try multiple selectors for price - Booking.com uses various patterns
-          const priceSelectors = [
-            '[data-testid="price-and-discounted-price"]',
-            '[data-testid="price"]',
-            '[data-testid="recommended-units"] [data-testid="price-and-discounted-price"]',
-            '.f6431b446c', // Booking.com price class
-            '.fbd1d3018c', // Another price class
-            '.fcab3ed991 .f6431b446c', // Container > price
-            '[class*="priceDisplay"]',
-            '[class*="price-primary"]'
-          ];
-          for (const selector of priceSelectors) {
-            const priceEl = card.querySelector(selector);
-            if (priceEl) {
-              const priceText = priceEl.textContent;
-              // Match currency + number or number + currency
-              const priceMatch = priceText.match(/(?:[A-Z]{3}|[$€£¥])\s*(\d[\d,\.]+)|(\d[\d,\.]+)\s*(?:[A-Z]{3}|[$€£¥])/);
-              if (priceMatch) {
-                pricePerNight = (priceMatch[1] || priceMatch[2]).replace(/,/g, '');
-                // Try to get currency
-                const currMatch = priceText.match(/([A-Z]{3}|[$€£¥])/);
-                if (currMatch) currency = currMatch[1];
-                break;
-              }
-              // Fallback: just find any number
-              const numMatch = priceText.match(/(\d[\d,\.]+)/);
-              if (numMatch) {
-                pricePerNight = numMatch[1].replace(/,/g, '');
-                break;
-              }
-            }
-          }
-          
-          if (name) {
-            results.push({ 
-              name, 
-              link, 
-              picture_url: pictureUrl, 
-              rating, 
-              reviews_count: reviewsCount, 
-              location, 
-              price_per_night: pricePerNight,
-              currency: currency
-            });
-          }
-        } catch (e) {}
+          results.push({ 
+            name, 
+            link,
+            picture_url: pictureUrl,
+            rating, 
+            reviews_count: reviewsCount, 
+            location, 
+            price_per_night: price,
+            currency: '$'
+          });
+        } catch (e) {
+          console.error(`[EVALUATE] Error at index ${i}:`, e.message);
+        }
       });
       
       return results;
@@ -629,7 +591,7 @@ async function scrapeWeather(location) {
 }
 
 /**
- * Dismiss cookie/overlay dialogs
+ * Shared Helpers
  */
 async function dismissOverlays(page) {
   const overlaySelectors = [
@@ -640,7 +602,9 @@ async function dismissOverlays(page) {
     'button[id*="accept"]',
     'button[class*="accept"]',
     '[id*="consent"] button',
-    '#onetrust-accept-btn-handler'
+    '#onetrust-accept-btn-handler',
+    'button[aria-label="Dismiss"]',
+    '[data-testid="selection-item-close"]'
   ];
   
   for (const selector of overlaySelectors) {
@@ -649,15 +613,11 @@ async function dismissOverlays(page) {
       if (btn) {
         await btn.click();
         await randomDelay(300, 600);
-        break;
       }
     } catch (e) {}
   }
 }
 
-/**
- * Auto-scroll to load lazy content
- */
 async function autoScroll(page, iterations = 5, pauseMs = 1000) {
   for (let i = 0; i < iterations; i++) {
     await page.evaluate(() => window.scrollBy(0, window.innerHeight));
@@ -751,46 +711,95 @@ async function scrapeBookingHotels(location, options = {}) {
  * Extract detailed hotel info from HTML
  */
 function extractHotelDetailsFromHTML(html) {
-  const details = {};
+  const details = {
+    url: '',
+    name: null,
+    address: null,
+    rating: null,
+    reviews_count: null,
+    rating_text: null,
+    main_photo: null,
+    photos: [],
+    facilities: [],
+    grouped_facilities: {},
+    restaurants: [],
+    rooms: [],
+    checkin_time: null,
+    checkout_time: null,
+    coordinates: { latitude: null, longitude: null },
+    highlights: [],
+    stars: null,
+    area_info: {},
+    property_info: {}
+  };
   
   try {
-    // Hotel name - prioritize most reliable sources first
-    // 1. og:title meta tag (most reliable, format: "★★★★★ Hotel Name, City, Country")
-    const ogTitleMatch = html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]+)"/i) ||
-                        html.match(/<meta[^>]*content="([^"]+)"[^>]*property="og:title"/i);
-    // 2. Specific hotel name from JSON with "Hotel" type
+    // ===== JSON-LD EXTRACTION (Primary source for name, rating, address, city) =====
+    const jsonLdBlocks = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi);
+    if (jsonLdBlocks) {
+      jsonLdBlocks.forEach(block => {
+        try {
+          const jsonText = block.replace(/<script[^>]*>|<\/script>/gi, '').trim();
+          const data = JSON.parse(jsonText);
+          
+          const processEntity = (entity) => {
+            if (entity['@type'] === 'Hotel' || entity['@type'] === 'Accommodation') {
+              if (!details.name && entity.name) details.name = decodeHtmlEntities(entity.name);
+              if (!details.address && entity.address?.streetAddress) details.address = decodeHtmlEntities(entity.address.streetAddress);
+              if (!details.city && entity.address?.addressLocality) details.city = decodeHtmlEntities(entity.address.addressLocality);
+              
+              if (entity.aggregateRating) {
+                if (!details.rating && entity.aggregateRating.ratingValue) details.rating = parseFloat(entity.aggregateRating.ratingValue);
+                if (!details.reviews_count && entity.aggregateRating.reviewCount) details.reviews_count = parseInt(entity.aggregateRating.reviewCount, 10);
+              }
+              
+              if (!details.description && entity.description) details.description = decodeHtmlEntities(entity.description);
+              if (!details.main_photo && entity.image) details.main_photo = entity.image;
+              if (entity.starRating?.ratingValue && !details.stars) details.stars = parseInt(entity.starRating.ratingValue, 10);
+              
+              // Coordinates from JSON-LD
+              if (entity.geo && !details.coordinates.latitude) {
+                details.coordinates.latitude = parseFloat(entity.geo.latitude);
+                details.coordinates.longitude = parseFloat(entity.geo.longitude);
+              }
+            }
+          };
+
+          if (Array.isArray(data)) data.forEach(processEntity);
+          else processEntity(data);
+        } catch (e) {
+          // Ignore parse errors for secondary scripts
+        }
+      });
+    }
+    
+    // Fallback for Hotel name - prioritize most reliable sources first
+    // 1. Specific hotel name from JSON with "Hotel" type
     const hotelJsonMatch = html.match(/"@type"\s*:\s*"Hotel"[^}]*?"name"\s*:\s*"([^"]+)"/i);
-    // 3. data-testid for header
-    const hotelNameMatch = html.match(/data-testid="header-hotel-name"[^>]*>([^<]+)</i);
-    // 4. h2 header
-    const h2HotelMatch = html.match(/<h2[^>]*class="[^"]*pp-header__title[^"]*"[^>]*>([^<]+)</i);
-    // 5. Title tag
-    const titleMatch = html.match(/<title>([^<|]+)/i);
-    
-    if (ogTitleMatch) {
-      // Clean og:title: remove stars (★) and extract hotel name
-      let name = ogTitleMatch[1].trim();
-      name = name.replace(/^[★☆\s]+/, ''); // Remove leading stars
-      name = name.split(',')[0].trim(); // Take first part (hotel name)
-      if (name.length > 3) {
-        details.name = decodeHtmlEntities(name);
-      }
-    }
-    
     if (!details.name && hotelJsonMatch) {
-      const name = hotelJsonMatch[1].trim();
-      // Avoid calendar/month names
-      if (name.length > 3 && !/^(January|February|March|April|May|June|July|August|September|October|November|December)$/i.test(name)) {
-        details.name = decodeHtmlEntities(name);
-      }
+      details.name = decodeHtmlEntities(hotelJsonMatch[1].trim());
     }
     
+    // 2. data-testid for header
+    const hotelNameMatch = html.match(/data-testid="header-hotel-name"[^>]*>([^<]+)</i);
     if (!details.name && hotelNameMatch) {
       details.name = decodeHtmlEntities(hotelNameMatch[1].trim());
-    } else if (!details.name && h2HotelMatch) {
+    }
+    
+    // 3. h2 header
+    const h2HotelMatch = html.match(/<h2[^>]*class="[^"]*pp-header__title[^"]*"[^>]*>([^<]+)</i);
+    if (!details.name && h2HotelMatch) {
       details.name = decodeHtmlEntities(h2HotelMatch[1].trim());
-    } else if (!details.name && titleMatch) {
-      details.name = decodeHtmlEntities(titleMatch[1].trim());
+    }
+    
+    // 4. Title tag as a last resort
+    const titleMatch = html.match(/<title>([^<|]+)/i);
+    if (!details.name && titleMatch) {
+      let name = titleMatch[1].trim();
+      if (!name.toLowerCase().includes('booking.com') && !name.toLowerCase().includes('the largest selection')) {
+        name = name.split(/[|,-]/)[0].trim();
+        details.name = decodeHtmlEntities(name);
+      }
     }
     
     // Address - from JSON-LD or HTML
@@ -807,11 +816,26 @@ function extractHotelDetailsFromHTML(html) {
     details.rating = ratingJsonMatch ? parseFloat(ratingJsonMatch[1]) : 
                     ratingHtmlMatch ? parseFloat(ratingHtmlMatch[1]) : null;
     
+    // Fallback: extraction from general score text in HTML
+    if (!details.rating) {
+      const generalRatingMatch = html.match(/class="[^"]*review-score-badge[^"]*"[^>]*>([^<]+)</i) ||
+                                html.match(/data-testid="review-score-badge"[^>]*>([^<]+)</i);
+      if (generalRatingMatch) details.rating = parseFloat(generalRatingMatch[1].trim());
+    }
+    
     // Total reviews
     const reviewsJsonMatch = html.match(/"reviewCount"\s*:\s*"?(\d+)"?/i);
-    const reviewsHtmlMatch = html.match(/(\d[\d,]*)\s*reviews?/i);
+    const reviewsHtmlMatch = html.match(/(\d[\d,]*)\s*reviews?/i) || html.match(/class="[^"]*review-score-badge[^"]*"[^>]*>[\s\S]*?(\d[\d,]*)\s*reviews?/i);
     details.reviews_count = reviewsJsonMatch ? parseInt(reviewsJsonMatch[1], 10) : 
                            reviewsHtmlMatch ? parseInt(reviewsHtmlMatch[1].replace(/,/g, ''), 10) : null;
+    
+    // Fallback: extraction from generic review text
+    if (!details.reviews_count) {
+      const genReviewsMatch = html.match(/(\d[\d,]*)\s*External reviews/i) ||
+                             html.match(/(\d[\d,]*)\s*verified reviews/i) ||
+                             html.match(/data-testid="review-score-link"[^>]*>[\s\S]*?(\d[\d,]*)/);
+      if (genReviewsMatch) details.reviews_count = parseInt(genReviewsMatch[1].replace(/,/g, ''), 10);
+    }
     
     // Rating text
     const ratingTextMatch = html.match(/Scored\s+[\d.]+[^>]*>[\s\S]*?<div[^>]*>([A-Za-z\s]+)</i) ||
@@ -819,8 +843,9 @@ function extractHotelDetailsFromHTML(html) {
     details.rating_text = ratingTextMatch ? ratingTextMatch[1].trim() : null;
     
     // Description
-    const descMatch = html.match(/"description"\s*:\s*"([^"]{50,1000})"/i) ||
-                     html.match(/data-testid="property-description"[^>]*>([\s\S]*?)<\/div>/i);
+    const descMatch = html.match(/"description"\s*:\s*"([^"]{50,2000})"/i) ||
+                     html.match(/data-testid="property-description"[^>]*>([\s\S]*?)<\/div>/i) ||
+                     html.match(/id="property_description_content"[^>]*>([\s\S]*?)<\/div>/i);
     if (descMatch) {
       let desc = descMatch[1];
       desc = desc.replace(/<[^>]+>/g, ' ').replace(/\\n/g, ' ').replace(/\s+/g, ' ').trim();
@@ -844,61 +869,97 @@ function extractHotelDetailsFromHTML(html) {
     }
     details.photos = photos;
     
-    // Facilities - look for specific facility section
-    const facilities = [];
+    // Unified Facilities Discovery (Detailed & Grouped)
+    const groupedFacilities = {};
+    const allFacilities = [];
     
-    // Method 1: From JSON-LD amenityFeature (most reliable)
-    const amenitiesJsonMatch = html.match(/"amenityFeature"\s*:\s*\[([\s\S]*?)\]/i);
-    if (amenitiesJsonMatch) {
-      const nameRegex = /"name"\s*:\s*"([^"]+)"/gi;
-      let nameMatch;
-      while ((nameMatch = nameRegex.exec(amenitiesJsonMatch[1])) !== null) {
-        const facility = decodeHtmlEntities(nameMatch[1]);
-        if (!facilities.includes(facility)) facilities.push(facility);
+    // Pattern: <div class="..."><div class="...">CATEGORY</div><ul class="...">...<li>FACILITY</li>...</ul></div>
+    // This looks for the grouped facilities sections (Bathroom, Bedroom, Kitchen, etc.)
+    const facilityGroupRegex = /<div[^>]*class="[^"]*(?:b-facility-group|hotel-facilities-group|fac-group-title)[^"]*"[^>]*>[\s\S]*?<div[^>]*class="[^"]*(?:b-facility-group__title|hotel-facilities-group__title|fac-group-title)[^"]*"[^>]*>([\s\S]*?)<\/div>[\s\S]*?<ul[^>]*>([\s\S]*?)<\/ul>/gi;
+    let groupMatch;
+    while ((groupMatch = facilityGroupRegex.exec(html)) !== null) {
+      const groupName = decodeHtmlEntities(groupMatch[1].replace(/<[^>]+>/g, '').trim());
+      const groupKey = groupName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+      const itemsHtml = groupMatch[2];
+      
+      const items = [];
+      const itemRegex = /<li[^>]*>[\s\S]*?<span[^>]*class="[^"]*(?:b-facility-item__label|hotel-facilities-group__list-item)[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
+      let itemMatch;
+      while ((itemMatch = itemRegex.exec(itemsHtml)) !== null) {
+        const item = decodeHtmlEntities(itemMatch[1].replace(/<[^>]+>/g, '').trim());
+        if (item && !items.includes(item)) {
+          items.push(item);
+          if (!allFacilities.includes(item)) allFacilities.push(item);
+        }
+      }
+      
+      if (items.length > 0) {
+        groupedFacilities[groupKey] = items;
       }
     }
     
-    // Method 2: Popular facilities from HP important facilities
-    if (facilities.length === 0) {
-      const importantMatch = html.match(/hp_desc_important_facilities[\s\S]*?<ul[^>]*>([\s\S]*?)<\/ul>/i);
-      if (importantMatch) {
-        const liRegex = /<li[^>]*>([^<]+)</gi;
-        let liMatch;
-        while ((liMatch = liRegex.exec(importantMatch[1])) !== null) {
-          const f = decodeHtmlEntities(liMatch[1].trim());
-          if (f && f.length > 2 && !facilities.includes(f)) facilities.push(f);
+    // Fallback: If no grouped facilities found, try simpler data-testid or class patterns
+    if (Object.keys(groupedFacilities).length === 0) {
+      const knownFacilities = ['Free WiFi', 'WiFi', 'Pool', 'Swimming pool', 'Gym', 'Fitness center', 
+        'Spa', 'Restaurant', 'Bar', 'Room service', 'Parking', 'Free parking', 'Air conditioning',
+        'Airport shuttle', 'Beach', 'Breakfast', 'Pet friendly', '24-hour front desk', 'Non-smoking rooms',
+        'Family rooms', 'Terrace', 'Garden', 'Hot tub', 'Sauna', 'Laundry', 'Kitchen', 'Balcony'];
+      
+      for (const fac of knownFacilities) {
+        if (html.includes(fac) && !allFacilities.includes(fac)) {
+          allFacilities.push(fac);
         }
       }
     }
     
-    // Method 3: Facility icons text
-    if (facilities.length === 0) {
-      const facilityIconsRegex = /class="[^"]*hp-summary[^"]*"[\s\S]*?>([\s\S]*?)<\/div>/gi;
-      let iconMatch;
-      while ((iconMatch = facilityIconsRegex.exec(html)) !== null && facilities.length < 20) {
-        const text = iconMatch[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-        const words = text.split(/\s{2,}/);
-        for (const w of words) {
-          if (w.length > 3 && w.length < 30 && !/sign in|log in|^\d+$/i.test(w) && !facilities.includes(w)) {
-            facilities.push(w);
+    details.facilities = allFacilities.slice(0, 30);
+    details.grouped_facilities = groupedFacilities;
+    
+    // ===== RESTAURANTS ON SITE =====
+    const restaurants = [];
+    // Pattern: "Restaurants on Site" followed by restaurant blocks
+    const restaurantsSectionMatch = html.match(/Restaurants\s+([Oo]n\s+[Ss]ite|[Aa]vailable)[\s\S]*?<div[^>]*data-testid="property-restaurants"[^>]*>([\s\S]*?)<\/div><\/div>/i);
+    if (restaurantsSectionMatch) {
+      const restaurantBlockRegex = /<div[^>]*data-testid="restaurant-card"[^>]*>([\s\S]*?)<\/div><\/div>/gi;
+      let restBlockMatch;
+      while ((restBlockMatch = restaurantBlockRegex.exec(restaurantsSectionMatch[2])) !== null) {
+        const blockHtml = restBlockMatch[1];
+        const rest = {};
+        
+        const nameMatch = blockHtml.match(/<h[34][^>]*>([^<]+)<\/h[34]>/i) || blockHtml.match(/class="[^"]*restaurant-name[^"]*"[^>]*>([^<]+)</i);
+        if (nameMatch) rest.name = decodeHtmlEntities(nameMatch[1].trim());
+        
+        // Extract meta info (Cuisine, Open for, Ambience)
+        const cuisineMatch = blockHtml.match(/Cuisine:?<\/span>[\s\S]*?<span[^>]*>([^<]+)<\/span>/i) || blockHtml.match(/Cuisine<\/div>[\s\S]*?<div[^>]*>([^<]+)<\/div>/i);
+        if (cuisineMatch) rest.cuisine = decodeHtmlEntities(cuisineMatch[1].trim());
+        
+        const openMatch = blockHtml.match(/Open for:?<\/span>[\s\S]*?<span[^>]*>([^<]+)<\/span>/i) || blockHtml.match(/Open for<\/div>[\s\S]*?<div[^>]*>([^<]+)<\/div>/i);
+        if (openMatch) rest.open_for = decodeHtmlEntities(openMatch[1].trim());
+        
+        const ambienceMatch = blockHtml.match(/Ambience:?<\/span>[\s\S]*?<span[^>]*>([^<]+)<\/span>/i) || blockHtml.match(/Ambience<\/div>[\s\S]*?<div[^>]*>([^<]+)<\/div>/i);
+        if (ambienceMatch) rest.ambience = decodeHtmlEntities(ambienceMatch[1].trim());
+        
+        const dietaryMatch = blockHtml.match(/Dietary options:?<\/span>[\s\S]*?<span[^>]*>([^<]+)<\/span>/i) || blockHtml.match(/Dietary options<\/div>[\s\S]*?<div[^>]*>([^<]+)<\/div>/i);
+        if (dietaryMatch) rest.dietary_options = decodeHtmlEntities(dietaryMatch[1].trim());
+        
+        if (rest.name) restaurants.push(rest);
+      }
+    }
+    
+    // Fallback restaurants from JSON-LD or simpler text patterns
+    if (restaurants.length === 0) {
+      const restMetaMatch = html.match(/"@type"\s*:\s*"Restaurant"[^}]*?"name"\s*:\s*"([^"]+)"/gi);
+      if (restMetaMatch) {
+        restMetaMatch.forEach(m => {
+          const name = m.match(/"name"\s*:\s*"([^"]+)"/i)[1];
+          if (name && !restaurants.find(r => r.name === name)) {
+            restaurants.push({ name: decodeHtmlEntities(name) });
           }
-        }
+        });
       }
     }
     
-    // Method 4: Try extracting common known facilities from text
-    const knownFacilities = ['Free WiFi', 'WiFi', 'Pool', 'Swimming pool', 'Gym', 'Fitness center', 
-      'Spa', 'Restaurant', 'Bar', 'Room service', 'Parking', 'Free parking', 'Air conditioning',
-      'Airport shuttle', 'Beach', 'Breakfast', 'Pet friendly', '24-hour front desk', 'Non-smoking rooms',
-      'Family rooms', 'Terrace', 'Garden', 'Hot tub', 'Sauna', 'Laundry', 'Kitchen', 'Balcony'];
-    
-    for (const fac of knownFacilities) {
-      if (html.includes(fac) && !facilities.includes(fac)) {
-        facilities.push(fac);
-      }
-    }
-    
-    details.facilities = facilities.slice(0, 25); // Limit to 25
+    details.restaurants = restaurants;
     
     // Room types - multiple extraction methods
     const rooms = [];
@@ -987,11 +1048,10 @@ function extractHotelDetailsFromHTML(html) {
                       html.match(/"starRating"\s*:\s*\{[^}]*"ratingValue"\s*:\s*(\d)/i);
     details.stars = starsMatch ? parseInt(starsMatch[1], 10) : null;
     
-    // ===== AREA INFO / NEARBY PLACES - DYNAMIC EXTRACTION =====
+    // ===== AREA INFO / NEARBY PLACES - ROBUST DYNAMIC EXTRACTION =====
     const areaInfo = {};
     
     try {
-      // Helper to convert category name to key
       const categoryToKey = (cat) => {
         return cat.toLowerCase()
           .replace(/&amp;/g, 'and')
@@ -1000,100 +1060,123 @@ function extractHotelDetailsFromHTML(html) {
           .replace(/[^a-z0-9]+/g, '_')
           .replace(/^_|_$/g, '');
       };
+
+      // Diagnostic: Find the Area Info section and log its context
+      const areaTitleIdx = html.search(/>(?:Area info|Property surroundings|What's nearby)</i);
+      if (areaTitleIdx !== -1) {
+        const fragment = html.substring(areaTitleIdx - 50, areaTitleIdx + 2000).replace(/\s+/g, ' ');
+        console.log('[DEBUG] Area Info fragment (expanded):', fragment.substring(0, 500));
+        // Check for common skeleton class
+        if (fragment.includes('skeleton')) {
+          console.warn('[SCRAPER] Warning: Skeletons detected in HTML fragment!');
+        }
+      }
+
+      // 1. Identify the entire surroundings section to limit the scope
+      const surroundingsBlockMatch = html.match(/class=\"[^\"]*property-surroundings[^\"]*\"[^>]*>([\s\S]*?)<\/section>/i) ||
+                                    html.match(/>(?:Area info|Property surroundings)<\/h2>([\s\S]*?)<\/section>/i);
       
-      // Find ALL category blocks dynamically
-      // Structure: <div class="e7addce19e...">CATEGORY</div></h3></div><ul...data-testid="poi-block-list"...>ITEMS</ul>
-      const categoryBlockPattern = /<div class="e7addce19e[^"]*">([^<]+)<\/div><\/h3><\/div><ul[^>]*data-testid="poi-block-list"[^>]*>([\s\S]*?)<\/ul>/gi;
-      let categoryMatch;
-      
-      while ((categoryMatch = categoryBlockPattern.exec(html)) !== null) {
-        const categoryName = decodeHtmlEntities(categoryMatch[1].trim());
+      const scopeHtml = surroundingsBlockMatch ? surroundingsBlockMatch[1] : html;
+
+      // Discovery: Look for category headings and subsequent lists
+      // Modified pattern: look for text followed by listitems more generically
+      const discoveryPattern = />\s*([^<]{3,40})\s*<\/[^>]+>[\s\S]{0,800}?(<[^>]+role=\"listitem\"[^>]*>[\s\S]*?)<\/(?:section|div|ul)/gi;
+      let dMatch;
+      while ((dMatch = discoveryPattern.exec(scopeHtml)) !== null) {
+        const categoryName = dMatch[1].replace(/<[^>]+>/g, '').trim();
         const categoryKey = categoryToKey(categoryName);
-        const itemsHtml = categoryMatch[2];
+        const itemsHtml = dMatch[2];
         
-        if (!categoryKey || categoryKey.length < 2) continue;
+        if (!categoryKey || categoryKey.length < 2 || /area_info|show_map|availability|reviews|check|property_surroundings/i.test(categoryKey)) continue;
         
+        // Skip keys that look like distances (e.g. "40_m", "0_7_mi")
+        if (/^\d+(_\d+)?(?:_km|_m|_mi)?$/.test(categoryKey)) continue;
+        
+        if (categoryName.includes('?') || categoryName.includes('}') || categoryName.length > 50) continue;
+
         const items = [];
-        
-        // Extract all items from this category block
-        // Item structure: class="aa225776f2...">NAME or <span>TYPE</span>NAME</div>...<div class="b99b6ef58f...">DISTANCE</div>
-        const itemPattern = /class="aa225776f2[^"]*">((?:<span[^>]*>([^<]+)<\/span>)?([^<]*))<\/div>[\s\S]*?class="b99b6ef58f[^"]*">(\d+\.?\d*)\s*(km|m)<\/div>/gi;
+        const itemRegex = /<[^>]+role=\"listitem\"[^>]*>([\s\S]*?)<\/[^>]+>/gi;
         let itemMatch;
-        
-        while ((itemMatch = itemPattern.exec(itemsHtml)) !== null && items.length < 15) {
-          const type = itemMatch[2] ? itemMatch[2].trim() : null;  // Type from <span> (Restaurant, Train, etc.)
-          const name = decodeHtmlEntities(itemMatch[3].trim());     // Name after span or full name
-          const distance = itemMatch[4] + ' ' + itemMatch[5];
+        while ((itemMatch = itemRegex.exec(itemsHtml)) !== null) {
+          const itemContent = itemMatch[1];
+          // Strip HTML but keep some markers for parsing
+          const fullText = itemContent.replace(/<[^>]+>/g, ' ').replace(/\s{2,}/g, ' ').trim();
           
-          if (name.length > 1) {
-            if (type) {
-              items.push({ type, name, distance });
-            } else {
+          if (!fullText || fullText.length < 2) continue;
+
+          // Match distance like "1.2 km", "450 m", "0.7 mi", "15km", "0.5mi"
+          const distRegex = /(\d+(?:\.\d+)?\s*(?:km|m|mi))\b/i;
+          const distMatch = fullText.match(distRegex);
+          const distance = distMatch ? distMatch[1].trim() : null;
+          
+          // Name cleaning: remove distance and common prefixes
+          let name = fullText;
+          if (distance) {
+            name = name.replace(distMatch[0], '').trim();
+          }
+          
+          // Remove bullet points / dots / prefixes like "Restaurant ·" or "Restaurant "
+          name = name.replace(/^[•·]\s*/, '')
+                     .replace(/^(?:Restaurant|Cafe|Subway|Train|Airport|Metro|Museum|Park|Bank|Pharmacy|Market|Tram|Bus|Square)\s*[•·\s-]\s*/i, '')
+                     .replace(/\s*[•·\s-]\s*$/, '')
+                     .trim();
+
+          if (name && name.length > 1 && !name.includes('...')) {
+            // Avoid adding duplicates if they appear due to overlapping regex matches
+            if (!items.find(i => i.name === name)) {
               items.push({ name, distance });
             }
           }
         }
-        
-        if (items.length > 0) {
-          areaInfo[categoryKey] = items;
-        }
+        if (items.length > 0) areaInfo[categoryKey] = items;
       }
-      
-      // Airports from JSON (always available even when HTML lazy-loaded content missing)
-      // Pattern: "title":"Airport Name","subtitle":"(CODE) X km"
-      if (!areaInfo.closest_airports || areaInfo.closest_airports.length === 0) {
-        const airports = [];
-        const airportJsonPattern = /"title":"([^"]*Airport[^"]*)","subtitle":"\(([A-Z]+)\)\s*(\d+\.?\d*)\s*(km|mi)"/gi;
-        let airportMatch;
-        while ((airportMatch = airportJsonPattern.exec(html)) !== null) {
-          const name = decodeHtmlEntities(airportMatch[1].trim());
-          const code = airportMatch[2];
-          const distance = airportMatch[3] + ' ' + airportMatch[4];
-          if (airports.length < 5) {
-            airports.push({ name, code, distance });
+
+      // 3. Fallback for specific categories if discovery missed them
+      if (Object.keys(areaInfo).length < 2) {
+        const labels = ["What's nearby", "Top attractions", "Closest Airports", "Public transit", "Restaurants & cafes", "Natural beauty"];
+        labels.forEach(label => {
+          const labelKey = categoryToKey(label);
+          if (areaInfo[labelKey]) return;
+
+          const pattern = new RegExp(`>\\s*${label}\\s*<[\\s\\S]{0,500}?(<[^>]+role=\"listitem\"[\\s\\S]*?)<\\/(?:section|div|ul)`, 'i');
+          const m = scopeHtml.match(pattern);
+          if (m) {
+            const its = [];
+            const ir = /role=\"listitem\"[^>]*>([\s\S]*?)<\/(?:li|div)/gi;
+            let im;
+            while ((im = ir.exec(m[1])) !== null) {
+              const text = im[1].replace(/<[^>]+>/g, ' ').trim();
+              const d = text.match(/(\d+\.?\d*\s*(?:km|m|mi))/i);
+              if (text) its.push({ name: text.replace(d ? d[1] : '', '').trim(), distance: d ? d[1] : null });
+            }
+            if (its.length > 0) areaInfo[labelKey] = its;
           }
-        }
-        if (airports.length > 0) {
-          areaInfo.closest_airports = airports;
-        }
+        });
       }
       
-      // Method 3: Fallback - extract from description if no area info found
-      if (Object.keys(areaInfo).length === 0) {
-        const descText = details.description || '';
-        const attractions = [];
-        const attractionPattern = /([A-Z][^.]*?)\s+is\s+(\d+\.?\d*)\s*(km|mi|miles?)\s+from/gi;
-        let attrMatch;
-        while ((attrMatch = attractionPattern.exec(descText)) !== null) {
-          const name = attrMatch[1].trim();
-          if (name.length > 3 && name.length < 60 && !/hotel|property|accommodation/i.test(name)) {
-            attractions.push({ name, distance: attrMatch[2] + ' ' + attrMatch[3] });
-          }
-        }
-        if (attractions.length > 0) {
-          areaInfo.nearby_from_description = attractions;
-        }
-        
-        // Airports from description
-        const airportDescMatch = descText.match(/nearest airport is ([^,]+),?\s*(\d+\.?\d*)\s*(km|mi)/i);
-        if (airportDescMatch) {
-          areaInfo.closest_airports = [{ 
-            name: airportDescMatch[1].trim(), 
-            distance: airportDescMatch[2] + ' ' + airportDescMatch[3] 
-          }];
+      // JSON-LD/Metadata Fallback for Airports (very reliable)
+      const airports = [];
+      const airportJsonPattern = /"title":"([^"]*Airport[^"]*)","subtitle":"\(([A-Z]+)\)\s*(\d+\.?\d*)\s*(km|mi)"/gi;
+      let airportMatch;
+      while ((airportMatch = airportJsonPattern.exec(html)) !== null) {
+        const name = decodeHtmlEntities(airportMatch[1].trim());
+        const code = airportMatch[2];
+        const distance = airportMatch[3] + ' ' + airportMatch[4];
+        if (!airports.find(a => a.name === name)) {
+          airports.push({ name, code, distance });
         }
       }
-      
-      // Extract city from JSON
-      const locationJsonMatch = html.match(/"location"\s*:\s*\{[^}]*"city"\s*:\s*"([^"]+)"[^}]*\}/i);
-      if (locationJsonMatch) {
-        details.city = locationJsonMatch[1];
-      }
+      if (airports.length > 0 && !areaInfo.closest_airports) areaInfo.closest_airports = airports;
     } catch (areaErr) {
       console.error('[DETAILS] Area info extraction error:', areaErr.message);
     }
     
     details.area_info = areaInfo;
+    
+    // Extract city from JSON
+    const locationJsonMatch = html.match(/"location"\s*:\s*\{[^}]*"city"\s*:\s*"([^"]+)"[^}]*\}/i) ||
+                             html.match(/"addressLocality"\s*:\s*"([^"]+)"/i);
+    details.city = locationJsonMatch ? decodeHtmlEntities(locationJsonMatch[1]) : null;
     
     // ===== LANGUAGES SPOKEN =====
     try {
@@ -1195,9 +1278,14 @@ function extractHotelDetailsFromHTML(html) {
       }
       
       // Pattern 4: Check-in info / house rules section often contains useful info
-      const houseRulesMatch = html.match(/House\s+[Rr]ules[\s\S]*?<(?:p|div)[^>]*>([^<]{20,300})</i);
+      const houseRulesMatch = html.match(/House\s+[Rr]ules[\s\S]*?<(?:p|div)[^>]*class="[^"]*(?:property-description|policy_conditions|hp_policy_description)[^"]*"[^>]*>([\s\S]*?)<\/div>/i) ||
+                             html.match(/data-testid="property-section-policies"[^>]*>([\s\S]*?)<\/section>/i) ||
+                             html.match(/id="policy_conditions"[^>]*>([\s\S]*?)<\/div>/i);
       if (houseRulesMatch) {
-        propertyInfo.house_rules = decodeHtmlEntities(houseRulesMatch[1].trim());
+        let rulesText = houseRulesMatch[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        if (rulesText.length > 20 && !rulesText.includes('Rue Pierre Demours')) { // Basic check to avoid address leakage
+           propertyInfo.house_rules = decodeHtmlEntities(rulesText);
+        }
       }
       
       if (Object.keys(propertyInfo).length > 0) {
@@ -1293,6 +1381,11 @@ async function scrapeHotelDetailsWithPuppeteer(hotelURL) {
     const page = await browser.newPage();
     await page.setUserAgent(userAgent);
     
+    // Redirect browser console logs to terminal for debugging
+    page.on('console', msg => {
+      console.log(`[BROWSER] ${msg.text()}`);
+    });
+    
     if (!isServerless) {
       await page.setViewport({ width: 1920, height: 1080 });
     }
@@ -1305,7 +1398,19 @@ async function scrapeHotelDetailsWithPuppeteer(hotelURL) {
     await page.goto(hotelURL, { waitUntil, timeout: TIMING.navigationTimeout });
     
     // Wait for body to exist
-    await page.waitForSelector('body', { timeout: 10000 });
+    try {
+      await page.waitForSelector('body', { timeout: 15000 });
+    } catch (e) {
+      console.warn('[SCRAPER] Body timeout, proceeding with current content');
+    }
+
+    // Wait for critical hotel name element to ensure page is loaded
+    try {
+      await page.waitForSelector('[data-testid="header-hotel-name"], h2.pp-header__title, #hp_hotel_name, .hp__hotel-name', { timeout: 20000 });
+      console.log('[SCRAPER] Hotel name element detected');
+    } catch (e) {
+      console.warn('[SCRAPER] Hotel name selector timeout - page may be slow or blocked');
+    }
     
     // Additional wait for content to load
     await randomDelay(2000, 3000);
@@ -1336,29 +1441,187 @@ async function scrapeHotelDetailsWithPuppeteer(hotelURL) {
       // Scroll back to top
       window.scrollTo(0, 0);
       await delay(500);
-      
-      // Scroll to bottom again
-      window.scrollTo(0, h);
-      await delay(1000);
     });
+      
+    // Proactive scrolling to trigger lazy loading of surroundings and other sections
+    console.log('[SCRAPER] Scrolling to trigger lazy loading...');
     
-    // Wait for POI blocks to appear
-    try {
-      await page.waitForSelector('[data-testid="poi-block-list"]', { timeout: 8000 });
-    } catch (e) {
-      // POI block not found, try waiting for location section
-      try {
-        await page.waitForSelector('[data-testid="PropertySurroundingsBlock"]', { timeout: 3000 });
-      } catch (e2) {
-        // Continue anyway
+    // Targeted scroll to surroundings section to ensure it's loaded
+    await page.evaluate(() => {
+      const areaH2 = Array.from(document.querySelectorAll('h2')).find(h => 
+        /Area info|Property surroundings|What's nearby/i.test(h.textContent)
+      );
+      if (areaH2) {
+        areaH2.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else {
+        window.scrollTo(0, document.body.scrollHeight / 2);
       }
+    });
+    await randomDelay(1000, 2000);
+
+    await autoScroll(page, 8, 800);
+    
+    // Wait for the surroundings section to hydrate (move from skeleton to real text)
+    // We look for any element inside the POI block that has a character length > 2
+    try {
+      console.log('[SCRAPER] Waiting for surroundings hydration...');
+      await page.waitForFunction(() => {
+        const areaSection = Array.from(document.querySelectorAll('h2')).find(h => 
+          /Area info|Property surroundings|What's nearby/i.test(h.textContent)
+        );
+        if (!areaSection) return false;
+        const container = areaSection.closest('section') || areaSection.parentElement.parentElement;
+        const items = Array.from(container.querySelectorAll('[role="listitem"], .aa225776f2, .poi-block__item'));
+        return items.length > 5 && items.some(i => i.textContent.trim().length > 10 && !i.querySelector('.skeleton'));
+      }, { timeout: 25000 });
+      console.log('[SCRAPER] Surroundings hydrated and text detected');
+    } catch (e) {
+      console.warn('[SCRAPER] Hydration wait timed out - proceeding with best effort');
     }
     
-    await randomDelay(500, 1000);
+    await randomDelay(1500, 2500);
+    
+    // Attempt to click "Show more" in Property surroundings / Area info section
+    try {
+      await page.evaluate(() => {
+        const areaSection = Array.from(document.querySelectorAll('h2')).find(h => 
+          /Area info|Property surroundings|What's nearby/i.test(h.textContent)
+        );
+        if (areaSection) {
+          const container = areaSection.closest('section') || areaSection.parentElement.parentElement;
+          const showMoreBtn = container.querySelector('button[aria-expanded="false"]');
+          if (showMoreBtn) {
+            showMoreBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            showMoreBtn.click();
+            console.log('[SCRAPER] Clicked "Show more" in Area Info');
+          }
+        }
+      });
+      await randomDelay(1000, 2000);
+    } catch (e) {
+      console.warn('[SCRAPER] Failed to click "Show more" in Area Info:', e.message);
+    }
+    
+    await randomDelay(1000, 2000);
+    
+    // Proactive overlay dismissal
+    await dismissOverlays(page);
+    
+    // Scroll a bit more to trigger more lazy loading
+    await page.evaluate(() => window.scrollBy(0, 500));
+    await delay(800);
     
     const html = await page.content();
+    if (html.length < 50000) {
+      console.warn('[SCRAPER] Page content very short, might be blocked. Length:', html.length);
+      console.log('[DEBUG] Start of HTML:', html.substring(0, 500));
+    } else {
+      console.log('[SCRAPER] Page content length:', html.length);
+    }
     
-    return extractHotelDetailsFromHTML(html);
+    // Extract details first
+    const details = extractHotelDetailsFromHTML(html);
+    
+    // Supplement with browser-side precision extraction for Area Info
+    try {
+      console.log('[SCRAPER] Extracting Area Info via browser DOM...');
+      const browserAreaInfo = await page.evaluate(() => {
+        const areaInfo = {};
+        const areaSection = Array.from(document.querySelectorAll('h2')).find(h => 
+          /Area info|Property surroundings|What's nearby/i.test(h.textContent)
+        );
+        if (!areaSection) return null;
+        
+        const container = areaSection.closest('section') || areaSection.parentElement.parentElement;
+        
+        // Find all headings that represent categories
+        const headings = Array.from(container.querySelectorAll('div[class*="title"], h3, h4, [class*="category_title"], [class*="heading"]'));
+        
+        headings.forEach(heading => {
+          const categoryName = heading.textContent.trim();
+          if (categoryName.length < 3 || categoryName.length > 50) return;
+          if (/Area info|Property surroundings|Show map|See availability/i.test(categoryName)) return;
+          // Skip distances misidentified as headings
+          if (/^(\d+\.?\d*\s*(?:km|m|mi))$/i.test(categoryName)) return;
+          
+          const categoryKey = categoryName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+          
+          // Find list items in the same container or next sibling
+          let section = heading.parentElement;
+          let listItems = Array.from(section.querySelectorAll('[role="listitem"]'));
+          
+          // If no items, try looking at the parent of the parent or the next sibling
+          if (listItems.length === 0) {
+            section = heading.parentElement.parentElement;
+            listItems = Array.from(section.querySelectorAll('[role="listitem"]'));
+          }
+          
+          if (listItems.length === 0 && heading.nextElementSibling) {
+            listItems = Array.from(heading.nextElementSibling.querySelectorAll('[role="listitem"]'));
+          }
+          
+          if (listItems.length > 0) {
+            const items = listItems.map(li => {
+              // Join child nodes with spaces to avoid concatenation issues (e.g. "RestaurantSarl")
+              const textParts = [];
+              const walk = document.createTreeWalker(li, NodeFilter.SHOW_TEXT, null, false);
+              let node;
+              while(node = walk.nextNode()) textParts.push(node.textContent.trim());
+              const fullText = textParts.filter(t => t.length > 0).join(' ').replace(/\s+/g, ' ').trim();
+              
+              // Match distance like "1.2 km", "450 m", "0.7 mi", "15km", "5 m"
+              const distRegex = /(\d+(?:\.\d+)?\s*(?:km|m|mi))\b/i;
+              const distMatch = fullText.match(distRegex);
+              const distance = distMatch ? distMatch[1].trim() : null;
+              
+              let name = fullText;
+              if (distance) {
+                // Remove the matched distance from the name
+                name = name.replace(distMatch[0], '').trim();
+              }
+              
+              // Remove generic prefixes and separators (now with optional spaces/tabs)
+              name = name.replace(/^[•·]\s*/, '')
+                         .replace(/^(?:Restaurant|Cafe|Subway|Train|Airport|Metro|Museum|Park|Bank|Pharmacy|Market|Tram|Bus|Square|Forest)\s*[•·\s-]*\s*/i, '')
+                         .replace(/\s*[•·\s-]\s*$/, '')
+                         .trim();
+              
+              // Special case for concatenated prefixes if any remain
+              const prefixes = ['Restaurant', 'Cafe', 'Subway', 'Train', 'Airport', 'Metro', 'Museum', 'Park', 'Bank', 'Pharmacy', 'Market', 'Tram', 'Bus', 'Square', 'Forest'];
+              for (const p of prefixes) {
+                if (name.startsWith(p) && name.length > p.length && /[A-Z]/.test(name[p.length])) {
+                  name = name.substring(p.length).trim();
+                  break;
+                }
+              }
+
+              return { name, distance };
+            }).filter(i => i.name.length > 1);
+            
+            if (items.length > 0) {
+              if (!areaInfo[categoryKey]) areaInfo[categoryKey] = [];
+              items.forEach(item => {
+                if (!areaInfo[categoryKey].find(existing => existing.name === item.name)) {
+                  areaInfo[categoryKey].push(item);
+                }
+              });
+            }
+          }
+        });
+        
+        return Object.keys(areaInfo).length > 0 ? areaInfo : null;
+      });
+      
+      if (browserAreaInfo) {
+        console.log('[SCRAPER] Browser-side Area Info merged:', Object.keys(browserAreaInfo));
+        details.area_info = { ...details.area_info, ...browserAreaInfo };
+      }
+    } catch (e) {
+      console.warn('[SCRAPER] Browser Area Info extraction failed:', e.message);
+    }
+    
+    details.url = hotelURL;
+    return details;
     
   } finally {
     await browser.close();

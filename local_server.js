@@ -327,13 +327,14 @@ const server = http.createServer(requestHandler);
 
 server.listen(PORT, HOST, () => {
   console.log('====================================');
-  console.log('  Booking.com Hotel Scraper API');
+  console.log('  Booking.com Scraper & Utility API');
   console.log('====================================');
   console.log(`Server running at http://${HOST}:${PORT}`);
   console.log('');
   console.log('Endpoints:');
   console.log('  POST /api/hotels        - Scrape hotels list');
   console.log('  POST /api/hotel-details - Get hotel details');
+  console.log('  POST /api/weather       - Get weather data');
   console.log('  GET  /api/health        - Health check');
   console.log('');
   console.log('Example requests:');
@@ -341,9 +342,9 @@ server.listen(PORT, HOST, () => {
   console.log('    -H "Content-Type: application/json" \\');
   console.log('    -d \'{"location":"Paris"}\'');
   console.log('');
-  console.log(`  curl -X POST http://localhost:${PORT}/api/hotel-details \\`);
+  console.log(`  curl -X POST http://localhost:${PORT}/api/weather \\`);
   console.log('    -H "Content-Type: application/json" \\');
-  console.log('    -d \'{"url":"https://www.booking.com/hotel/..."}\'');
+  console.log('    -d \'{"location":"Paris"}\'');
   console.log('');
   console.log('Zyte API:', process.env.ZYTE_API_KEY ? 'Configured' : 'Not configured');
   console.log('====================================');

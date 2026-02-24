@@ -85,8 +85,8 @@ async function main() {
   console.log('[MAIN] Search URL:', searchURL);
   
   try {
-    // Run the scraper
-    const hotels = await scrapeBookingHotels(searchURL);
+    // Run the scraper - Pass location string directly
+    const hotels = await scrapeBookingHotels(input.location);
     
     // Output results as JSON
     console.log('[MAIN] Scraping complete. Results:');
