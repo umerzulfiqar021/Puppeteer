@@ -58,7 +58,10 @@ function buildSearchURL(location, options = {}) {
     no_rooms: String(options.rooms || 1),
     group_children: String(options.children || 0),
     lang: 'en-us',
-    selected_currency: options.currency || 'USD'  // Force currency to help show prices
+    selected_currency: options.currency || 'USD',
+    // Add common organic parameters to mimic real traffic
+    aid: '304142',
+    label: 'gen173bo-1DCAEoggI46AdIM1gDaGiIAQGYATG4ARfIAQzYAQHoAQGIAgGoAgO4AsmNrr0GwAIB0gIkYWI1NmZlYmEtNTA4Yy00ZjIyLWIzOTItYTRkMjYyZDVlMTU52AIE4AIB'
   });
   
   return `${base}?${params.toString()}`;
@@ -418,17 +421,18 @@ async function scrapeWithPuppeteer(searchURL) {
     if (!foundSelector) {
       console.log('[SCRAPER] No hotel elements found with any selector');
       
-      // Check for common block indicators
+      const finalUrl = page.url();
       const isBlocked = pageContent.toLowerCase().includes('robot') || 
                         pageContent.toLowerCase().includes('captcha') ||
-                        title.includes('Access Denied');
+                        title.includes('Access Denied') ||
+                        (finalUrl.includes('index.html') && finalUrl.includes('errorc_searchstring'));
       
       return { 
         hotels: [], 
         debugInfo: { 
           title, 
           contentLength: pageContent.length, 
-          finalUrl: page.url(),
+          finalUrl: finalUrl,
           isBlocked,
           error: isBlocked ? 'Rate limited or blocked by Booking.com' : 'No hotel elements found after trying all selectors'
         } 
@@ -670,19 +674,27 @@ async function scrapeBookingHotels(location, options = {}) {
         }
       }
     }
-    // Priority 2: Use Browserless if configured (for serverless)
-    else if (browserlessToken) {
-      console.log('[SCRAPER] Using Browserless.io...');
+    // Priority 2: Try local Puppeteer
+    else if (!isServerless || browserlessToken) {
+      console.log(browserlessToken ? '[SCRAPER] Using Browserless.io...' : '[SCRAPER] Using local Puppeteer...');
       const result = await scrapeWithPuppeteer(searchURL);
       hotels = result.hotels;
       debugInfo = result.debugInfo;
-    }
-    // Priority 3: Use local Puppeteer (only works locally, not in Appwrite)
-    else if (!isServerless) {
-      console.log('[SCRAPER] Using local Puppeteer...');
-      const result = await scrapeWithPuppeteer(searchURL);
-      hotels = result.hotels;
-      debugInfo = result.debugInfo;
+      
+      // FAIL-SAFE: If Puppeteer returns 0 hotels or is blocked, AND ZYTE key exists, retry with Zyte
+      if (hotels.length === 0 && zyteApiKey && !options.noRetry) {
+        console.log('[SCRAPER] Puppeteer failed or blocked. Automatic FAIL-SAFE retry with Zyte API...');
+        try {
+          const zyteResult = await scrapeWithZyte(searchURL, zyteApiKey);
+          if (zyteResult.hotels && zyteResult.hotels.length > 0) {
+            hotels = zyteResult.hotels;
+            debugInfo = { ...zyteResult.debugInfo, was_fallback: true, original_debug: debugInfo };
+            console.log(`[SCRAPER] Fail-safe success: Extracted ${hotels.length} hotels via Zyte`);
+          }
+        } catch (e) {
+          console.warn('[SCRAPER] Fail-safe Zyte retry also failed:', e.message);
+        }
+      }
     }
     // No scraping method available in serverless
     else {
