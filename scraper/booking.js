@@ -304,11 +304,8 @@ async function scrapeWithPuppeteer(searchURL) {
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--disable-gpu',
         '--window-size=1920,1080',
-        '--disable-blink-features=AutomationControlled',
-        '--lang=en-US'
+        '--disable-blink-features=AutomationControlled'
       ]
     });
   }
@@ -328,52 +325,28 @@ async function scrapeWithPuppeteer(searchURL) {
     }
     
     // Set cookies to appear as returning visitor
-    await page.setCookie({
-      name: 'pcm_personalization_disabled',
-      value: '0',
-      domain: '.booking.com'
-    }, {
-      name: 'bkng_sso_session',
-      value: 'e30',
-      domain: '.booking.com'  
-    }, {
-      name: 'cors_js',
-      value: '1',
-      domain: '.booking.com'
-    });
     await page.setExtraHTTPHeaders({
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+      'Accept-Language': 'en-US,en;q=0.9'
     });
     
-    // Enable request interception to block unnecessary resources
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const resourceType = req.resourceType();
-      const url = req.url();
-      
-      // Block images, fonts, media, and third-party scripts (keep stylesheets for layout)
-      if (['image', 'font', 'media'].includes(resourceType) || 
-          url.includes('google-analytics') || 
-          url.includes('doubleclick') || 
-          url.includes('facebook')) {
-        req.abort();
-      } else {
-        req.continue();
-      }
-    });
+    // Removed request interception as it is a strong anti-bot signal
     
     console.log('[SCRAPER] Navigating to search URL...');
     console.log('[SCRAPER] URL:', searchURL);
     
-    // Use load for serverless to ensure page is ready
+    // Use the same wait strategy as working detail scraper
+    const waitUntil = isServerless ? 'domcontentloaded' : 'networkidle2';
     try {
-      await page.goto(searchURL, { waitUntil: 'networkidle2', timeout: 60000 });
+      await page.goto(searchURL, { waitUntil, timeout: TIMING.navigationTimeout });
       console.log('[SCRAPER] Page loaded');
     } catch (navError) {
       console.log('[SCRAPER] Navigation error:', navError.message);
-      // Try to continue anyway - page might have partial content
     }
+    
+    // Wait for body to ensure page has minimum structure
+    try {
+      await page.waitForSelector('body', { timeout: 15000 });
+    } catch (e) {}
     
     // Wait for network to settle
     await randomDelay(2500, 4500);
@@ -439,9 +412,15 @@ async function scrapeWithPuppeteer(searchURL) {
       };
     }
     
-    // Scroll to load lazy content
+    // Scroll to load lazy content - using more organic chunked scrolling
     console.log('[SCRAPER] Scrolling to load content...');
-    await autoScroll(page, TIMING.scrollIterations, TIMING.scrollPause);
+    await page.evaluate(async () => {
+      const delay = (ms) => new Promise(r => setTimeout(r, ms));
+      for (let i = 1; i <= 8; i++) {
+        window.scrollBy(0, 500);
+        await delay(300);
+      }
+    });
     await randomDelay(1500, 2500);
     
     // Proactive overlay dismissal after scroll
